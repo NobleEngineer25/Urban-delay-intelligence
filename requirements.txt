@@ -1,2 +1,5 @@
 pandas
-
+requests
+pyspark
+duckdb
+delta-spark
