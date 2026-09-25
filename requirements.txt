@@ -1,2 +1,6 @@
 pandas
-
+requests
+pyspark
+duckdb
+delta-spark
+fastapi[standard]
