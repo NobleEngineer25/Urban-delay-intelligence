@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Urban Delay Intelligence — skeleton</title>
+</head>
+<body>
+  <h1>Urban Delay Intelligence</h1>
+  <p>Walking skeleton: form → API → number.</p>
+
+  <form id="trip-form">
+    <fieldset>
+      <legend>Origin</legend>
+      <label>Latitude <input name="origin_lat" type="number" step="any" value="41.8781" required></label>
+      <label>Longitude <input name="origin_lon" type="number" step="any" value="-87.6298" required></label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Destination</legend>
+      <label>Latitude <input name="dest_lat" type="number" step="any" value="41.9742" required></label>
+      <label>Longitude <input name="dest_lon" type="number" step="any" value="-87.9073" required></label>
+    </fieldset>
+
+    <p>
+      <label>Departure time
+        <input name="departure_time" type="datetime-local" value="2023-01-15T08:30" required>
+      </label>
+    </p>
+
+    <button type="submit">Predict</button>
+  </form>
+
+  <h2>Result</h2>
+  <pre id="result">Nothing yet.</pre>
+
+  <script>
+    // Where the API lives. Changes to the Cloud Run URL in Week 6.
+    const API_URL = "http://localhost:8080";
+
+    const form = document.getElementById("trip-form");
+    const result = document.getElementById("result");
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault(); // stop the page from reloading
+      result.textContent = "Predicting...";
+
+      const payload = {
+        origin_lat: parseFloat(form.origin_lat.value),
+        origin_lon: parseFloat(form.origin_lon.value),
+        dest_lat: parseFloat(form.dest_lat.value),
+        dest_lon: parseFloat(form.dest_lon.value),
+        departure_time: form.departure_time.value,
+      };
+
+      try {
+        const response = await fetch(`${API_URL}/predict`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          result.textContent =
+            `API rejected the request (${response.status}):\n` +
+            JSON.stringify(data.detail, null, 2);
+          return;
+        }
+
+        const toMinutes = (seconds) => (seconds / 60).toFixed(1);
+
+        result.textContent =
+          `Typical trip (P50):  ${toMinutes(data.p50_seconds)} min\n` +
+          `Slower case (P80):   ${toMinutes(data.p80_seconds)} min\n` +
+          `Worst case (P90):    ${toMinutes(data.p90_seconds)} min\n\n` +
+          `Distance: ${data.distance_km} km   Model: ${data.model_version}`;
+      } catch (error) {
+        result.textContent =
+          `Could not reach the API at ${API_URL}.\n` +
+          `Is the Docker container running?`;
+      }
+    });
+  </script>
+</body>
+</html>
+

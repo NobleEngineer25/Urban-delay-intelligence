@@ -2,9 +2,20 @@ from datetime import datetime
 from math import asin, cos, radians, sin, sqrt
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware  # NEW
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="Urban Delay Intelligence", version="0.1.0")
+
+# NEW: allow the browser page to call this API.
+# "*" is fine for the local skeleton. Tighten to the real frontend URL
+# during the Week 18 security review.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 
 class TripRequest(BaseModel):
@@ -38,7 +49,7 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 @app.get("/health")
 def health() -> dict:
-    """Simple check that the service is alive. Docker and Cloud Run use this later."""
+    """Simple check that the service is alive."""
     return {"status": "ok"}
 
 
@@ -50,7 +61,6 @@ def predict(trip: TripRequest) -> TripPrediction:
     )
 
     # Fake formula: 2 min base + 140 s per km.
-    # Tuned so a typical Chicago trip lands near the real 1,099 s average.
     p50 = int(120 + distance_km * 140)
 
     return TripPrediction(
