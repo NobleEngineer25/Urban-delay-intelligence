@@ -9,7 +9,7 @@ spark = (
 )
 
 df = spark.read.csv(
-    "src/data/raw/chicago_taxi_2023_01.csv",
+    "data/raw/chicago_taxi_2023_01.csv",
     header=True,
     inferSchema=True
 )
