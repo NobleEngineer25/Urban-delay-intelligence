@@ -1,12 +1,5 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import (
-    col,
-    hour,
-    dayofweek,
-    when,
-    round
-)
-
+from pyspark.sql.functions import col, dayofweek, hour, round, when
 
 spark = (
     SparkSession.builder

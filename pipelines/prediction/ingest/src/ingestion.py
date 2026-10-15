@@ -1,7 +1,7 @@
 import csv
-import requests
 from pathlib import Path
 
+import requests
 
 BASE_URL = "https://data.cityofchicago.org/api/v3/views/wrvz-psew/query.json"
 

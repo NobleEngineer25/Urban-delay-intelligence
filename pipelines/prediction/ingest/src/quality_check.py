@@ -1,13 +1,5 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import (
-    col,
-    count,
-    when,
-    min,
-    max,
-    avg
-)
-
+from pyspark.sql.functions import avg, col, count, max, min, when
 
 spark = (
     SparkSession.builder
