@@ -235,3 +235,13 @@ pipelines/prediction/ingest/src/data/bronze/*
 pipelines/prediction/ingest/src/data/silver/*
 !pipelines/prediction/ingest/src/data/silver/create_silver.py
 .DS_Store
+
+# Local MLflow tracking database
+mlflow.db
+mlflow.db-journal
+
+# Generated data
+pipelines/prediction/ingest/src/data/bronze/
+pipelines/prediction/ingest/src/data/silver/chicago_taxi/
+pipelines/prediction/ingest/src/data/silver/chicago_taxi_h3/
+pipelines/prediction/ingest/src/data/gold/chicago_taxi_baseline/

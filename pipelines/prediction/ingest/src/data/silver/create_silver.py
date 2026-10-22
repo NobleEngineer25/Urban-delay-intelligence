@@ -19,8 +19,10 @@ builder = (
 spark = configure_spark_with_delta_pip(builder).getOrCreate()
 
 # Read Bronze Delta data
-bronze_path = "data/bronze/chicago_taxi"
+bronze_path = "pipelines/prediction/ingest/src/data/bronze/chicago_taxi"
 df = spark.read.format("delta").load(bronze_path)
+print("Kolonner i Bronze:")
+print(df.columns)
 
 print("Bronze rows:", df.count())
 
@@ -70,8 +72,7 @@ df = (
 )
 
 # Save cleaned data as Silver Delta
-silver_path = "data/silver/chicago_taxi"
-
+silver_path = "pipelines/prediction/ingest/src/data/silver/chicago_taxi"
 df.write \
     .format("delta") \
     .mode("overwrite") \
