@@ -227,3 +227,11 @@ __marimo__/
 # Secrets / keys
 *.pem
 *.key
+
+# Local raw data and generated Delta tables
+pipelines/prediction/ingest/src/data/raw/
+pipelines/prediction/ingest/src/data/bronze/*
+!pipelines/prediction/ingest/src/data/bronze/create_bronze.py
+pipelines/prediction/ingest/src/data/silver/*
+!pipelines/prediction/ingest/src/data/silver/create_silver.py
+.DS_Store
