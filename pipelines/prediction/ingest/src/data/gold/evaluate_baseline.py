@@ -1,5 +1,7 @@
 
 import mlflow
+from pyspark.sql.window import Window
+from pyspark.sql.functions import row_number
 from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
@@ -46,20 +48,28 @@ df = df.filter(
 
 # Sort by trip start time and split chronologically:
 # earliest 80% for training, latest 20% for testing.
-df = df.orderBy("trip_start_timestamp")
+df = df.orderBy("trip_start_timestamp", "trip_id")
 
 total_rows = df.count()
 split_row = int(total_rows * 0.8)
 
-from pyspark.sql.window import Window
-from pyspark.sql.functions import row_number
-
-ordering = Window.orderBy("trip_start_timestamp")
+ordering = Window.orderBy("trip_start_timestamp", "trip_id")
 
 df = df.withColumn("_row_num", row_number().over(ordering))
 
 train = df.filter(col("_row_num") <= split_row)
 test = df.filter(col("_row_num") > split_row)
+
+print("Baseline:")
+print("Total rows:", total_rows)
+print("Train rows:", train.count())
+print("Test rows:", test.count())
+
+print("Test trip ID range:")
+test.selectExpr(
+    "min(trip_id) as min_trip_id",
+    "max(trip_id) as max_trip_id",
+).show(truncate=False)
 
 # Derive hour from the timestamp so the feature is consistent.
 train = train.withColumn(
@@ -69,6 +79,22 @@ train = train.withColumn(
 test = test.withColumn(
     "hour",
     hour("trip_start_timestamp"),
+)
+test.selectExpr(
+    "min(trip_start_timestamp) as test_start",
+    "max(trip_start_timestamp) as test_end",
+).show(truncate=False)
+
+
+print(
+    "Test period:",
+    test.agg(
+        {"trip_start_timestamp": "min"}
+    ).first()[0],
+    "to",
+    test.agg(
+        {"trip_start_timestamp": "max"}
+    ).first()[0],
 )
 
 # Build the lookup table using TRAINING DATA ONLY.
@@ -94,6 +120,7 @@ test_predictions = test.join(
     ],
     how="left",
 )
+
 
 # For combinations not found in training, use the overall
 # training-set average as a fallback.

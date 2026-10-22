@@ -245,3 +245,7 @@ pipelines/prediction/ingest/src/data/bronze/
 pipelines/prediction/ingest/src/data/silver/chicago_taxi/
 pipelines/prediction/ingest/src/data/silver/chicago_taxi_h3/
 pipelines/prediction/ingest/src/data/gold/chicago_taxi_baseline/
+
+
+# Generated Gold feature data
+pipelines/prediction/ingest/src/data/gold/chicago_taxi_features/
