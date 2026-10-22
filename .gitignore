@@ -249,3 +249,6 @@ pipelines/prediction/ingest/src/data/gold/chicago_taxi_baseline/
 
 # Generated Gold feature data
 pipelines/prediction/ingest/src/data/gold/chicago_taxi_features/
+
+# Local MLflow tracking artifacts
+mlruns/

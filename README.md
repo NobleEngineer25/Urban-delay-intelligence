@@ -91,3 +91,33 @@ The implementation uses Conformalized Quantile Regression (CQR), with the 10th a
 The results show that the calibrated interval achieved 78.94% coverage on the chronological test set, close to the nominal 80% target. The small conformal adjustment indicates that the original LightGBM quantile interval was already close to the target coverage on the calibration data.
 
 Because taxi-trip observations are time-dependent, the nominal coverage should not be interpreted as a guaranteed coverage level under temporal dependence or distribution shifts. Further validation on later time periods is recommended.
+
+## Spatial and Temporal Cross-Validation
+
+Evaluated the LightGBM median quantile regression model using five temporal folds and five spatial folds.
+
+### Temporal Cross-Validation
+
+- Strategy: Expanding training window with later test periods
+- Number of folds: 5
+- Mean MAE: 5.81 minutes
+- Standard deviation: 0.19 minutes
+- Best fold MAE: 5.60 minutes
+- Worst fold MAE: 6.17 minutes
+
+### Spatial Cross-Validation
+
+- Strategy: Hold out pickup areas and exclude training trips involving held-out areas
+- Number of folds: 5
+- Mean fold MAE: 9.56 minutes
+- Standard deviation: 1.41 minutes
+- Best fold MAE: 7.26 minutes
+- Worst fold MAE: 11.06 minutes
+
+### Findings
+
+Temporal evaluation showed relatively stable performance across the January 2023 test periods. Spatial evaluation produced higher errors, suggesting that predictions are more challenging for trips originating in geographic areas excluded from training.
+
+The dataset covers January 2023 only, so evaluation across additional months is needed to assess performance under seasonal changes and longer-term distribution shifts.
+
+Results are logged to MLflow and exported to CSV files.
