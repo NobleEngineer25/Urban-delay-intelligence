@@ -1,5 +1,7 @@
 from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
+from pathlib import Path
+
 
 builder = (
     SparkSession.builder
@@ -18,13 +20,15 @@ builder = (
 spark = configure_spark_with_delta_pip(builder).getOrCreate()
 
 
-# Read raw CSV
+
+PROJECT_ROOT = Path(__file__).resolve().parents[5]
+raw_path = PROJECT_ROOT / "src" / "data" / "raw" / "chicago_taxi_2023_01.csv"
+
 df = spark.read.csv(
-    "src/data/raw/chicago_taxi_2023_01.csv",
+    "data/raw/chicago_taxi_2023_01.csv",
     header=True,
     inferSchema=True
 )
-
 print("Raw rows:", df.count())
 
 
