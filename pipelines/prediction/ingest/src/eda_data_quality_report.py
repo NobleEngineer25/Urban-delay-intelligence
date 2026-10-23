@@ -1,10 +1,15 @@
 
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col,
     countDistinct,
+    date_format,
     hour,
     isnan,
     max as spark_max,
@@ -15,6 +20,11 @@ from pyspark.sql.functions import (
     to_date,
     when,
 )
+
+
+# --------------------------------------------------
+# Configuration
+# --------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
@@ -35,6 +45,13 @@ REPORT_FILE = (
     / "eda_data_quality_report.md"
 )
 
+FIGURES_DIR = REPORT_FILE.parent / "figures"
+
+
+# --------------------------------------------------
+# Spark setup and helper functions
+# --------------------------------------------------
+
 spark = (
     SparkSession.builder
     .appName("UrbanDelayEDADataQuality")
@@ -44,25 +61,49 @@ spark = (
 
 
 def fmt(value):
+    """Format numeric values for the Markdown report."""
     if value is None:
         return "N/A"
     return f"{value:,.3f}"
 
 
+def add_check(df, lines, label, condition):
+    """Append the number of rows matching a quality check."""
+    number = df.filter(condition).count()
+    lines.append(f"| {label} | {number:,} rows |")
+
+
+def escape_markdown(value):
+    """Prevent pipe characters from breaking Markdown tables."""
+    if value is None:
+        return "NULL"
+    return str(value).replace("|", r"\|").replace("\n", " ")
+
+
 try:
+    # --------------------------------------------------
+    # 1. Load raw data
+    # --------------------------------------------------
+
     if not RAW_FILE.exists():
         raise FileNotFoundError(
             f"Raw dataset not found: {RAW_FILE}"
         )
 
-    df = spark.read.csv(
-        str(RAW_FILE),
-        header=True,
-        inferSchema=True,
-    ).cache()
+    df = (
+        spark.read.csv(
+            str(RAW_FILE),
+            header=True,
+            inferSchema=True,
+        )
+        .cache()
+    )
 
     row_count = df.count()
     columns = df.columns
+
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    REPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     lines = [
         "# EDA and Data Quality Report",
@@ -85,7 +126,10 @@ try:
             f"`{field.dataType.simpleString()}` |"
         )
 
-    # Date range and temporal overview
+    # --------------------------------------------------
+    # 2. Time coverage
+    # --------------------------------------------------
+
     lines.extend([
         "",
         "## 2. Time coverage",
@@ -101,9 +145,6 @@ try:
         lines.extend([
             f"- **First trip start:** {time_stats['first']}",
             f"- **Last trip start:** {time_stats['last']}",
-        ])
-
-        lines.extend([
             "",
             "### Trips by hour of day",
             "",
@@ -120,7 +161,30 @@ try:
         )
 
         for row in hourly:
-            lines.append(f"| {row['hour']} | {row['count']:,} |")
+            lines.append(
+                f"| {row['hour']} | {row['count']:,} |"
+            )
+
+        # Calculate the busiest hours once, outside the loop.
+        busiest_hours = sorted(
+            hourly,
+            key=lambda row: row["count"],
+            reverse=True,
+        )[:5]
+
+        lines.extend([
+            "",
+            "### Top 5 busiest hours",
+            "",
+            "| Rank | Hour | Trips |",
+            "|---:|---:|---:|",
+        ])
+
+        for rank, row in enumerate(busiest_hours, start=1):
+            lines.append(
+                f"| {rank} | {row['hour']}:00 | "
+                f"{row['count']:,} |"
+            )
 
         lines.extend([
             "",
@@ -141,9 +205,39 @@ try:
         )
 
         for row in daily:
-            lines.append(f"| {row['date']} | {row['count']:,} |")
+            lines.append(
+                f"| {row['date']} | {row['count']:,} |"
+            )
 
-    # Missing values
+        lines.extend([
+            "",
+            "### Trips by day of week",
+            "",
+            "| Day | Trips |",
+            "|---|---:|",
+        ])
+
+        weekdays = (
+            df.filter(col("trip_start_timestamp").isNotNull())
+            .groupBy(
+                date_format(
+                    col("trip_start_timestamp"), "EEEE"
+                ).alias("day")
+            )
+            .count()
+            .orderBy("day")
+            .collect()
+        )
+
+        for row in weekdays:
+            lines.append(
+                f"| {row['day']} | {row['count']:,} |"
+            )
+
+    # --------------------------------------------------
+    # 3. Missing values
+    # --------------------------------------------------
+
     lines.extend([
         "",
         "## 3. Missing values",
@@ -173,14 +267,19 @@ try:
         missing_count = int(missing_row[name] or 0)
         percentage = (
             missing_count / row_count * 100
-            if row_count else 0
+            if row_count
+            else 0
         )
+
         lines.append(
             f"| `{name}` | {missing_count:,} "
             f"| {percentage:.2f}% |"
         )
 
-    # Exact duplicates and trip IDs
+    # --------------------------------------------------
+    # 4. Duplicate records
+    # --------------------------------------------------
+
     duplicate_count = row_count - df.dropDuplicates().count()
 
     lines.extend([
@@ -194,14 +293,20 @@ try:
         distinct_ids = df.select(
             countDistinct("trip_id")
         ).first()[0]
-        missing_ids = df.filter(col("trip_id").isNull()).count()
+
+        missing_ids = df.filter(
+            col("trip_id").isNull()
+        ).count()
 
         lines.extend([
             f"- **Distinct non-null trip IDs:** {distinct_ids:,}",
             f"- **Missing trip IDs:** {missing_ids:,}",
         ])
 
-    # Numeric distributions
+    # --------------------------------------------------
+    # 5. Numeric distributions
+    # --------------------------------------------------
+
     numeric_types = {
         "int", "bigint", "float", "double",
         "smallint", "tinyint", "long", "decimal",
@@ -232,11 +337,16 @@ try:
 
         lines.append(
             f"| `{name}` | {fmt(stats['min'])} "
-            f"| {fmt(stats['mean'])} | {fmt(stats['median'])} "
-            f"| {fmt(stats['p95'])} | {fmt(stats['max'])} |"
+            f"| {fmt(stats['mean'])} "
+            f"| {fmt(stats['median'])} "
+            f"| {fmt(stats['p95'])} "
+            f"| {fmt(stats['max'])} |"
         )
 
-    # Domain-specific quality checks
+    # --------------------------------------------------
+    # 6. Data quality checks
+    # --------------------------------------------------
+
     lines.extend([
         "",
         "## 6. Data quality checks",
@@ -245,35 +355,31 @@ try:
         "|---|---:|",
     ])
 
-    def add_check(label, condition):
-        number = df.filter(condition).count()
-        lines.append(f"| {label} | {number:,} rows |")
-
     if "trip_seconds" in columns:
         add_check(
-            "Missing trip_seconds",
+            df, lines, "Missing trip_seconds",
             col("trip_seconds").isNull(),
         )
         add_check(
-            "Zero trip_seconds",
+            df, lines, "Zero trip_seconds",
             col("trip_seconds") == 0,
         )
         add_check(
-            "Negative trip_seconds",
+            df, lines, "Negative trip_seconds",
             col("trip_seconds") < 0,
         )
 
     if "trip_miles" in columns:
         add_check(
-            "Missing trip_miles",
+            df, lines, "Missing trip_miles",
             col("trip_miles").isNull(),
         )
         add_check(
-            "Zero trip_miles",
+            df, lines, "Zero trip_miles",
             col("trip_miles") == 0,
         )
         add_check(
-            "Negative trip_miles",
+            df, lines, "Negative trip_miles",
             col("trip_miles") < 0,
         )
 
@@ -282,16 +388,19 @@ try:
         "trip_end_timestamp",
     }.issubset(columns):
         add_check(
-            "Missing trip end timestamp",
+            df, lines, "Missing trip end timestamp",
             col("trip_end_timestamp").isNull(),
         )
         add_check(
-            "Trip end before trip start",
+            df, lines, "Trip end before trip start",
             col("trip_end_timestamp")
             < col("trip_start_timestamp"),
         )
 
-    # Categorical distributions
+    # --------------------------------------------------
+    # 7. Categorical distributions
+    # --------------------------------------------------
+
     lines.extend([
         "",
         "## 7. Categorical distributions",
@@ -319,12 +428,14 @@ try:
         for row in categories:
             value = (
                 "(NULL)" if row[name] is None
-                else str(row[name]).replace("|", "\\|")
+                else escape_markdown(row[name])
             )
             percentage = (
                 row["count"] / row_count * 100
-                if row_count else 0
+                if row_count
+                else 0
             )
+
             lines.append(
                 f"| {value} | {row['count']:,} "
                 f"| {percentage:.2f}% |"
@@ -332,13 +443,65 @@ try:
 
         lines.append("")
 
-    # Extreme values: inspect top records, don't automatically remove them
+    # --------------------------------------------------
+    # 8. Geographic analysis
+    # --------------------------------------------------
+
     lines.extend([
         "",
-        "## 8. Extreme-value investigation",
+        "## 8. Geographic analysis",
+        "",
+        "Trips by pickup and dropoff community area.",
+        "",
+    ])
+
+    for name in [
+        "pickup_community_area",
+        "dropoff_community_area",
+    ]:
+        if name not in columns:
+            continue
+
+        lines.extend([
+            f"### Top 10: `{name}`",
+            "",
+            "| Community area | Trips | Percentage of all trips |",
+            "|---:|---:|---:|",
+        ])
+
+        areas = (
+            df.filter(col(name).isNotNull())
+            .groupBy(name)
+            .count()
+            .orderBy(col("count").desc())
+            .limit(10)
+            .collect()
+        )
+
+        for row in areas:
+            percentage = (
+                row["count"] / row_count * 100
+                if row_count
+                else 0
+            )
+
+            lines.append(
+                f"| {row[name]} | {row['count']:,} "
+                f"| {percentage:.2f}% |"
+            )
+
+        lines.append("")
+
+    # --------------------------------------------------
+    # 9. Extreme-value investigation
+    # --------------------------------------------------
+
+    lines.extend([
+        "",
+        "## 9. Extreme-value investigation",
         "",
         "These are the highest observed values, not automatically "
-        "confirmed errors.",
+        "confirmed errors. Values require domain validation.",
         "",
     ])
 
@@ -351,6 +514,21 @@ try:
         "trip_total",
     ]
 
+    identifiers = [
+        name for name in [
+            "trip_id",
+            "trip_start_timestamp",
+            "trip_end_timestamp",
+            "trip_seconds",
+            "trip_miles",
+            "fare",
+            "tolls",
+            "extras",
+            "trip_total",
+        ]
+        if name in columns
+    ]
+
     for name in extreme_columns:
         if name not in columns:
             continue
@@ -358,22 +536,9 @@ try:
         lines.extend([
             f"### Highest values for `{name}`",
             "",
+            "| " + " | ".join(identifiers) + " |",
+            "|" + "|".join(["---"] * len(identifiers)) + "|",
         ])
-
-        identifiers = [
-            c for c in [
-                "trip_id",
-                "trip_start_timestamp",
-                "trip_end_timestamp",
-                "trip_seconds",
-                "trip_miles",
-                "fare",
-                "tolls",
-                "extras",
-                "trip_total",
-            ]
-            if c in columns
-        ]
 
         top_rows = (
             df.filter(col(name).isNotNull())
@@ -383,46 +548,199 @@ try:
             .collect()
         )
 
-        lines.append(
-            "| " + " | ".join(identifiers) + " |"
-        )
-        lines.append(
-            "|" + "|".join(["---"] * len(identifiers)) + "|"
-        )
-
         for row in top_rows:
-            values = []
-            for field in identifiers:
-                value = row[field]
-                values.append(
-                    "NULL" if value is None
-                    else str(value).replace("|", "\\|")
-                )
+            values = [
+                escape_markdown(row[field])
+                for field in identifiers
+            ]
             lines.append("| " + " | ".join(values) + " |")
 
         lines.append("")
 
-    # Summary and limitations
+    # --------------------------------------------------
+    # 10. Distribution visualizations
+    # --------------------------------------------------
+
     lines.extend([
         "",
-        "## 9. Interpretation and limitations",
+        "## 10. Distribution visualizations",
         "",
-        "- Missing geographic fields may limit spatial analysis.",
-        "- Zero or negative durations should be investigated separately.",
-        "- Extreme distance and fare values need domain validation.",
-        "- Exact duplicate checks do not replace business-key checks.",
-        "- No source rows are changed or deleted by this script.",
-        "- These findings describe the raw CSV before Bronze ingestion.",
-        "- Follow-up checks should compare raw, Bronze, Silver and Gold "
-        "row counts and document each filtering rule.",
+        "Histograms exclude missing, negative and out-of-range values.",
         "",
     ])
 
-    REPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    REPORT_FILE.write_text("\n".join(lines), encoding="utf-8")
+    plot_configs = [
+        {
+            "column": "trip_seconds",
+            "title": "Trip Duration Distribution",
+            "xlabel": "Trip duration (minutes)",
+            "filename": "trip_duration_distribution.png",
+            "scale": 60,
+            "max_value": 120,
+            "unit": "minutes",
+        },
+        {
+            "column": "trip_miles",
+            "title": "Trip Distance Distribution",
+            "xlabel": "Trip distance (miles)",
+            "filename": "trip_distance_distribution.png",
+            "scale": 1,
+            "max_value": 100,
+            "unit": "miles",
+        },
+    ]
+
+    for config in plot_configs:
+        name = config["column"]
+
+        if name not in columns:
+            continue
+
+        values = (
+            df.filter(
+                col(name).isNotNull()
+                & (col(name) >= 0)
+                & (
+                    col(name)
+                    <= config["max_value"] * config["scale"]
+                )
+            )
+            .select(col(name))
+            .rdd.map(
+                lambda row: row[0] / config["scale"]
+            )
+            .collect()
+        )
+
+        if not values:
+            continue
+
+        plt.figure(figsize=(10, 5))
+        plt.hist(values, bins=50, edgecolor="black")
+        plt.title(config["title"])
+        plt.xlabel(config["xlabel"])
+        plt.ylabel("Number of trips")
+        plt.tight_layout()
+
+        image_path = FIGURES_DIR / config["filename"]
+        plt.savefig(image_path, dpi=150)
+        plt.close()
+
+        lines.extend([
+            f"### {config['title']}",
+            "",
+            f"![{config['title']}](figures/{config['filename']})",
+            "",
+            f"*Plot includes non-negative values up to "
+            f"{config['max_value']} {config['unit']}.*",
+            "",
+        ])
+
+    # --------------------------------------------------
+    # 11. Geographic visualization
+    # --------------------------------------------------
+
+    if {
+        "pickup_centroid_latitude",
+        "pickup_centroid_longitude",
+    }.issubset(columns):
+        geo_df = (
+            df.filter(
+                col("pickup_centroid_latitude").isNotNull()
+                & col("pickup_centroid_longitude").isNotNull()
+                & col("pickup_centroid_latitude").between(
+                    41.6, 42.1
+                )
+                & col("pickup_centroid_longitude").between(
+                    -88.0, -87.4
+                )
+            )
+            .groupBy(
+                "pickup_centroid_latitude",
+                "pickup_centroid_longitude",
+            )
+            .count()
+            .collect()
+        )
+
+        if geo_df:
+            latitudes = [
+                row["pickup_centroid_latitude"]
+                for row in geo_df
+            ]
+            longitudes = [
+                row["pickup_centroid_longitude"]
+                for row in geo_df
+            ]
+            counts = [row["count"] for row in geo_df]
+
+            plt.figure(figsize=(9, 8))
+            plt.scatter(
+                longitudes,
+                latitudes,
+                s=[min(count, 500) for count in counts],
+                alpha=0.6,
+            )
+            plt.title("Chicago Taxi Pickup Density")
+            plt.xlabel("Longitude")
+            plt.ylabel("Latitude")
+            plt.tight_layout()
+
+            geo_filename = "pickup_density_chicago.png"
+            plt.savefig(FIGURES_DIR / geo_filename, dpi=150)
+            plt.close()
+
+            lines.extend([
+                "",
+                "## 11. Geographic visualization",
+                "",
+                "Pickup locations are grouped by their recorded "
+                "centroid coordinates. Point sizes represent trip "
+                "counts, with marker sizes capped for readability.",
+                "",
+                f"![Chicago pickup density](figures/{geo_filename})",
+                "",
+                f"- **Distinct pickup coordinates:** {len(geo_df):,}",
+                "",
+                "The geographic bounds are restricted to the "
+                "Chicago area; coordinates outside those bounds "
+                "are excluded from this plot only.",
+                "",
+            ])
+
+    # --------------------------------------------------
+    # 12. Interpretation and limitations
+    # --------------------------------------------------
+
+    lines.extend([
+        "",
+        "## 12. Interpretation and limitations",
+        "",
+        "- Missing geographic fields may limit spatial analysis.",
+        "- Zero or negative durations should be investigated.",
+        "- Extreme distance and fare values need domain validation.",
+        "- Exact duplicate checks do not replace business-key checks.",
+        "- This script does not change or delete source rows.",
+        "- Findings describe the raw CSV before Bronze ingestion.",
+        "- Compare raw, Bronze, Silver and Gold row counts and "
+        "document each filtering rule.",
+        "- Histogram limits and geographic bounds affect only "
+        "the visualizations, not the underlying dataset.",
+        "",
+    ])
+
+    # --------------------------------------------------
+    # Write report
+    # --------------------------------------------------
+
+    REPORT_FILE.write_text(
+        "\n".join(lines) + "\n",
+        encoding="utf-8",
+    )
 
     print(f"Report saved to: {REPORT_FILE}")
     print(f"Rows: {row_count:,}; columns: {len(columns)}")
+    print(f"Figures saved to: {FIGURES_DIR}")
 
 finally:
     spark.stop()

@@ -71,6 +71,16 @@
 | 22 | 11,669 |
 | 23 | 8,876 |
 
+### Top 5 busiest hours
+
+| Rank | Hour | Trips |
+|---:|---:|---:|
+| 1 | 17:00 | 31,000 |
+| 2 | 16:00 | 29,392 |
+| 3 | 18:00 | 28,762 |
+| 4 | 15:00 | 27,902 |
+| 5 | 13:00 | 26,879 |
+
 ### Trips by date
 
 | Date | Trips |
@@ -106,6 +116,18 @@
 | 2023-01-29 | 9,534 |
 | 2023-01-30 | 14,565 |
 | 2023-01-31 | 16,368 |
+
+### Trips by day of week
+
+| Day | Trips |
+|---|---:|
+| Friday | 60,672 |
+| Monday | 63,676 |
+| Saturday | 42,348 |
+| Sunday | 48,538 |
+| Thursday | 64,567 |
+| Tuesday | 74,989 |
+| Wednesday | 59,688 |
 
 ## 3. Missing values
 
@@ -228,9 +250,44 @@
 | 5062 - 34841 Sam Mestas | 31 | 0.01% |
 
 
-## 8. Extreme-value investigation
+## 8. Geographic analysis
 
-These are the highest observed values, not automatically confirmed errors.
+Trips by pickup and dropoff community area.
+
+### Top 10: `pickup_community_area`
+
+| Community area | Trips | Percentage of all trips |
+|---:|---:|---:|
+| 8 | 87,485 | 21.11% |
+| 76 | 67,952 | 16.39% |
+| 32 | 62,428 | 15.06% |
+| 28 | 41,860 | 10.10% |
+| 6 | 14,662 | 3.54% |
+| 56 | 12,774 | 3.08% |
+| 7 | 9,628 | 2.32% |
+| 33 | 8,812 | 2.13% |
+| 3 | 7,804 | 1.88% |
+| 77 | 6,077 | 1.47% |
+
+### Top 10: `dropoff_community_area`
+
+| Community area | Trips | Percentage of all trips |
+|---:|---:|---:|
+| 8 | 91,734 | 22.13% |
+| 32 | 61,107 | 14.74% |
+| 28 | 40,280 | 9.72% |
+| 6 | 19,677 | 4.75% |
+| 7 | 17,464 | 4.21% |
+| 76 | 15,047 | 3.63% |
+| 33 | 11,116 | 2.68% |
+| 24 | 10,908 | 2.63% |
+| 3 | 9,484 | 2.29% |
+| 77 | 7,661 | 1.85% |
+
+
+## 9. Extreme-value investigation
+
+These are the highest observed values, not automatically confirmed errors. Values require domain validation.
 
 ### Highest values for `trip_seconds`
 
@@ -293,12 +350,42 @@ These are the highest observed values, not automatically confirmed errors.
 | 2dceed72db0fdcfd45c4b72da2e63c41fb539b4e | 2023-01-12 12:15:00 | 2023-01-12 12:15:00 | 0 | 0.0 | 3.25 | 1.11 | 1111.11 | 1115.47 |
 
 
-## 9. Interpretation and limitations
+## 10. Distribution visualizations
+
+Histograms exclude missing, negative and out-of-range values.
+
+### Trip Duration Distribution
+
+![Trip Duration Distribution](figures/trip_duration_distribution.png)
+
+*Plot includes non-negative values up to 120 minutes.*
+
+### Trip Distance Distribution
+
+![Trip Distance Distribution](figures/trip_distance_distribution.png)
+
+*Plot includes non-negative values up to 100 miles.*
+
+
+## 11. Geographic visualization
+
+Pickup locations are grouped by their recorded centroid coordinates. Point sizes represent trip counts, with marker sizes capped for readability.
+
+![Chicago pickup density](figures/pickup_density_chicago.png)
+
+- **Distinct pickup coordinates:** 300
+
+The geographic bounds are restricted to the Chicago area; coordinates outside those bounds are excluded from this plot only.
+
+
+## 12. Interpretation and limitations
 
 - Missing geographic fields may limit spatial analysis.
-- Zero or negative durations should be investigated separately.
+- Zero or negative durations should be investigated.
 - Extreme distance and fare values need domain validation.
 - Exact duplicate checks do not replace business-key checks.
-- No source rows are changed or deleted by this script.
-- These findings describe the raw CSV before Bronze ingestion.
-- Follow-up checks should compare raw, Bronze, Silver and Gold row counts and document each filtering rule.
+- This script does not change or delete source rows.
+- Findings describe the raw CSV before Bronze ingestion.
+- Compare raw, Bronze, Silver and Gold row counts and document each filtering rule.
+- Histogram limits and geographic bounds affect only the visualizations, not the underlying dataset.
+
