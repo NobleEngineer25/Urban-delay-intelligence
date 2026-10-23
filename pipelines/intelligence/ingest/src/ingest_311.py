@@ -10,7 +10,6 @@ import time
 from datetime import date, timedelta
 from pathlib import Path
 
-from duckdb import df
 import pandas as pd
 import requests
 
