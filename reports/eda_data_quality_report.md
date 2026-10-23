@@ -389,3 +389,34 @@ The geographic bounds are restricted to the Chicago area; coordinates outside th
 - Compare raw, Bronze, Silver and Gold row counts and document each filtering rule.
 - Histogram limits and geographic bounds affect only the visualizations, not the underlying dataset.
 
+
+## 13. Bronze vs Silver data quality comparison
+
+Silver applies provisional data-quality rules to Bronze.
+
+| Metric | Bronze | Silver |
+|---|---:|---:|
+| Total rows | 414,478 | 368,307 |
+| Missing trip IDs | 0 | 0 |
+| Zero trip duration | 7,924 | 0 |
+| Zero trip distance | 44,519 | 0 |
+| Negative trip duration | 0 | 0 |
+
+### Filtering summary
+
+- **Bronze rows:** 414,478
+- **Silver rows:** 368,307
+- **Rows removed:** 46,171
+- **Rows retained:** 88.86%
+
+### Silver quality rules
+
+- Required fields must not be null.
+- Trip duration must be greater than 0 and at most 10,800 seconds.
+- Trip distance must be greater than 0 and at most 100 miles.
+- Trip total must be non-negative.
+- Calculated average speed must not exceed 100 mph.
+- Trip duration is derived from `trip_seconds`.
+
+These are project-specific provisional thresholds, not universal definitions of valid taxi trips.
+

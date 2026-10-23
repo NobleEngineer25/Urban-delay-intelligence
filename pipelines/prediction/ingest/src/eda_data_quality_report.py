@@ -1,6 +1,6 @@
 
 from pathlib import Path
-
+from delta import configure_spark_with_delta_pip
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -44,6 +44,27 @@ REPORT_FILE = (
     / "reports"
     / "eda_data_quality_report.md"
 )
+BRONZE_PATH = (
+    PROJECT_ROOT
+    / "pipelines"
+    / "prediction"
+    / "ingest"
+    / "src"
+    / "data"
+    / "bronze"
+    / "chicago_taxi"
+)
+
+SILVER_PATH = (
+    PROJECT_ROOT
+    / "pipelines"
+    / "prediction"
+    / "ingest"
+    / "src"
+    / "data"
+    / "silver"
+    / "chicago_taxi"
+)
 
 FIGURES_DIR = REPORT_FILE.parent / "figures"
 
@@ -52,13 +73,23 @@ FIGURES_DIR = REPORT_FILE.parent / "figures"
 # Spark setup and helper functions
 # --------------------------------------------------
 
-spark = (
+builder = (
     SparkSession.builder
     .appName("UrbanDelayEDADataQuality")
     .master("local[*]")
-    .getOrCreate()
+    .config(
+        "spark.sql.extensions",
+        "io.delta.sql.DeltaSparkSessionExtension"
+    )
+    .config(
+        "spark.sql.catalog.spark_catalog",
+        "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+    )
 )
 
+spark = configure_spark_with_delta_pip(
+    builder
+).getOrCreate()
 
 def fmt(value):
     """Format numeric values for the Markdown report."""
@@ -728,7 +759,68 @@ try:
         "the visualizations, not the underlying dataset.",
         "",
     ])
+    # --------------------------------------------------
+    # 13. Bronze vs Silver data quality comparison
+    # --------------------------------------------------
 
+    lines.extend([
+        "",
+        "## 13. Bronze vs Silver data quality comparison",
+        "",
+        "Silver applies provisional data-quality rules to Bronze.",
+        "",
+        "| Metric | Bronze | Silver |",
+        "|---|---:|---:|",
+    ])
+
+    bronze_df = spark.read.format("delta").load(str(BRONZE_PATH))
+    silver_df = spark.read.format("delta").load(str(SILVER_PATH))
+
+    bronze_count = bronze_df.count()
+    silver_count = silver_df.count()
+
+    removed_count = bronze_count - silver_count
+    retained_pct = (
+        silver_count / bronze_count * 100
+        if bronze_count
+        else 0
+    )
+
+    lines.extend([
+        f"| Total rows | {bronze_count:,} | {silver_count:,} |",
+        f"| Missing trip IDs | "
+        f"{bronze_df.filter(col('trip_id').isNull()).count():,} | "
+        f"{silver_df.filter(col('trip_id').isNull()).count():,} |",
+        f"| Zero trip duration | "
+        f"{bronze_df.filter(col('trip_seconds') == 0).count():,} | "
+        f"{silver_df.filter(col('trip_seconds') == 0).count():,} |",
+        f"| Zero trip distance | "
+        f"{bronze_df.filter(col('trip_miles') == 0).count():,} | "
+        f"{silver_df.filter(col('trip_miles') == 0).count():,} |",
+        f"| Negative trip duration | "
+        f"{bronze_df.filter(col('trip_seconds') < 0).count():,} | "
+        f"{silver_df.filter(col('trip_seconds') < 0).count():,} |",
+        "",
+        "### Filtering summary",
+        "",
+        f"- **Bronze rows:** {bronze_count:,}",
+        f"- **Silver rows:** {silver_count:,}",
+        f"- **Rows removed:** {removed_count:,}",
+        f"- **Rows retained:** {retained_pct:.2f}%",
+        "",
+        "### Silver quality rules",
+        "",
+        "- Required fields must not be null.",
+        "- Trip duration must be greater than 0 and at most 10,800 seconds.",
+        "- Trip distance must be greater than 0 and at most 100 miles.",
+        "- Trip total must be non-negative.",
+        "- Calculated average speed must not exceed 100 mph.",
+        "- Trip duration is derived from `trip_seconds`.",
+        "",
+        "These are project-specific provisional thresholds, "
+        "not universal definitions of valid taxi trips.",
+        "",
+    ])
     # --------------------------------------------------
     # Write report
     # --------------------------------------------------
