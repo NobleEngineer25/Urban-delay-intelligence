@@ -1,3 +1,4 @@
+
 from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, dayofweek, hour, when
@@ -18,67 +19,83 @@ builder = (
 
 spark = configure_spark_with_delta_pip(builder).getOrCreate()
 
-# Read Bronze Delta data
-bronze_path = "pipelines/prediction/ingest/src/data/bronze/chicago_taxi"
-df = spark.read.format("delta").load(bronze_path)
-print("Kolonner i Bronze:")
-print(df.columns)
+try:
+    # Read Bronze Delta data
+    bronze_path = "pipelines/prediction/ingest/src/data/bronze/chicago_taxi"
+    df = spark.read.format("delta").load(bronze_path)
 
-print("Bronze rows:", df.count())
+    bronze_count = df.count()
+    print("Bronze rows:", bronze_count)
+    print("Bronze columns:", df.columns)
 
-# Remove duplicate trips
-df = df.dropDuplicates(["trip_id"])
+    # Remove duplicate trip IDs
+    df = df.dropDuplicates(["trip_id"])
 
-# Remove rows with missing or invalid values
-required_columns = [
-    "trip_id",
-    "trip_start_timestamp",
-    "trip_seconds",
-    "trip_miles",
-    "trip_total",
-]
+    # Remove rows with missing required values
+    required_columns = [
+        "trip_id",
+        "trip_start_timestamp",
+        "trip_seconds",
+        "trip_miles",
+        "trip_total",
+    ]
+    df = df.dropna(subset=required_columns)
 
-df = df.dropna(subset=required_columns)
-
-df = df.filter(
-    (col("trip_seconds") > 0)
-    & (col("trip_miles") > 0)
-    & (col("trip_total") >= 0)
-)
-
-# Create features for analysis and prediction
-df = (
-    df
-    .withColumn(
-        "trip_duration_minutes",
-        col("trip_seconds") / 60
+    # Apply provisional data-quality rules
+    df = df.filter(
+        (col("trip_seconds") > 0)
+        & (col("trip_seconds") <= 10800)
+        & (col("trip_miles") > 0)
+        & (col("trip_miles") <= 100)
+        & (col("trip_total") >= 0)
     )
-    .withColumn(
+
+    # Calculate speed and exclude implausible values
+    df = df.withColumn(
         "avg_speed_mph",
         col("trip_miles") / (col("trip_seconds") / 3600)
     )
-    .withColumn(
-        "hour",
-        hour(col("trip_start_timestamp"))
-    )
-    .withColumn(
-        "day_of_week",
-        dayofweek(col("trip_start_timestamp"))
-    )
-    .withColumn(
-        "is_weekend",
-        when(col("day_of_week").isin(1, 7), 1).otherwise(0)
-    )
-)
+    df = df.filter(col("avg_speed_mph") <= 100)
 
-# Save cleaned data as Silver Delta
-silver_path = "pipelines/prediction/ingest/src/data/silver/chicago_taxi"
-df.write \
-    .format("delta") \
-    .mode("overwrite") \
-    .save(silver_path)
+    # Create features
+    df = (
+        df
+        .withColumn(
+            "trip_duration_minutes",
+            col("trip_seconds") / 60
+        )
+        .withColumn(
+            "hour",
+            hour(col("trip_start_timestamp"))
+        )
+        .withColumn(
+            "day_of_week",
+            dayofweek(col("trip_start_timestamp"))
+        )
+        .withColumn(
+            "is_weekend",
+            when(col("day_of_week").isin(1, 7), 1).otherwise(0)
+        )
+    )
 
-print("Silver rows:", df.count())
-print("Silver Delta table saved to:", silver_path)
+    silver_count = df.count()
 
-spark.stop()
+    print("Silver rows:", silver_count)
+    print("Rows removed:", bronze_count - silver_count)
+    print(
+        "Rows retained:",
+        f"{silver_count / bronze_count * 100:.2f}%"
+    )
+
+    # Save cleaned data as Silver Delta
+    silver_path = "pipelines/prediction/ingest/src/data/silver/chicago_taxi"
+
+    df.write \
+        .format("delta") \
+        .mode("overwrite") \
+        .save(silver_path)
+
+    print("Silver Delta table saved to:", silver_path)
+
+finally:
+    spark.stop()
