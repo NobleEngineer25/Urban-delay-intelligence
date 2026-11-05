@@ -1,10 +1,12 @@
 
 from pathlib import Path
-from delta import configure_spark_with_delta_pip
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
+from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col,
@@ -12,15 +14,20 @@ from pyspark.sql.functions import (
     date_format,
     hour,
     isnan,
-    max as spark_max,
     mean,
-    min as spark_min,
     percentile_approx,
-    sum as spark_sum,
     to_date,
     when,
 )
-
+from pyspark.sql.functions import (
+    max as spark_max,
+)
+from pyspark.sql.functions import (
+    min as spark_min,
+)
+from pyspark.sql.functions import (
+    sum as spark_sum,
+)
 
 # --------------------------------------------------
 # Configuration
@@ -44,6 +51,7 @@ REPORT_FILE = (
     / "reports"
     / "eda_data_quality_report.md"
 )
+
 BRONZE_PATH = (
     PROJECT_ROOT
     / "pipelines"
@@ -90,6 +98,7 @@ builder = (
 spark = configure_spark_with_delta_pip(
     builder
 ).getOrCreate()
+
 
 def fmt(value):
     """Format numeric values for the Markdown report."""
@@ -531,8 +540,10 @@ try:
         "",
         "## 9. Extreme-value investigation",
         "",
-        "These are the highest observed values, not automatically "
-        "confirmed errors. Values require domain validation.",
+        (
+            "These are the highest observed values, not automatically "
+            "confirmed errors. Values require domain validation."
+        ),
         "",
     ])
 
@@ -638,7 +649,7 @@ try:
             )
             .select(col(name))
             .rdd.map(
-                lambda row: row[0] / config["scale"]
+                lambda row, scale=config["scale"]: row[0] / scale
             )
             .collect()
         )
@@ -662,8 +673,10 @@ try:
             "",
             f"![{config['title']}](figures/{config['filename']})",
             "",
-            f"*Plot includes non-negative values up to "
-            f"{config['max_value']} {config['unit']}.*",
+            (
+                f"*Plot includes non-negative values up to "
+                f"{config['max_value']} {config['unit']}.*"
+            ),
             "",
         ])
 
@@ -725,17 +738,21 @@ try:
                 "",
                 "## 11. Geographic visualization",
                 "",
-                "Pickup locations are grouped by their recorded "
-                "centroid coordinates. Point sizes represent trip "
-                "counts, with marker sizes capped for readability.",
+                (
+                    "Pickup locations are grouped by their recorded "
+                    "centroid coordinates. Point sizes represent trip "
+                    "counts, with marker sizes capped for readability."
+                ),
                 "",
                 f"![Chicago pickup density](figures/{geo_filename})",
                 "",
                 f"- **Distinct pickup coordinates:** {len(geo_df):,}",
                 "",
-                "The geographic bounds are restricted to the "
-                "Chicago area; coordinates outside those bounds "
-                "are excluded from this plot only.",
+                (
+                    "The geographic bounds are restricted to the "
+                    "Chicago area; coordinates outside those bounds "
+                    "are excluded from this plot only."
+                ),
                 "",
             ])
 
@@ -753,12 +770,17 @@ try:
         "- Exact duplicate checks do not replace business-key checks.",
         "- This script does not change or delete source rows.",
         "- Findings describe the raw CSV before Bronze ingestion.",
-        "- Compare raw, Bronze, Silver and Gold row counts and "
-        "document each filtering rule.",
-        "- Histogram limits and geographic bounds affect only "
-        "the visualizations, not the underlying dataset.",
+        (
+            "- Compare raw, Bronze, Silver and Gold row counts and "
+            "document each filtering rule."
+        ),
+        (
+            "- Histogram limits and geographic bounds affect only "
+            "the visualizations, not the underlying dataset."
+        ),
         "",
     ])
+
     # --------------------------------------------------
     # 13. Bronze vs Silver data quality comparison
     # --------------------------------------------------
@@ -788,18 +810,26 @@ try:
 
     lines.extend([
         f"| Total rows | {bronze_count:,} | {silver_count:,} |",
-        f"| Missing trip IDs | "
-        f"{bronze_df.filter(col('trip_id').isNull()).count():,} | "
-        f"{silver_df.filter(col('trip_id').isNull()).count():,} |",
-        f"| Zero trip duration | "
-        f"{bronze_df.filter(col('trip_seconds') == 0).count():,} | "
-        f"{silver_df.filter(col('trip_seconds') == 0).count():,} |",
-        f"| Zero trip distance | "
-        f"{bronze_df.filter(col('trip_miles') == 0).count():,} | "
-        f"{silver_df.filter(col('trip_miles') == 0).count():,} |",
-        f"| Negative trip duration | "
-        f"{bronze_df.filter(col('trip_seconds') < 0).count():,} | "
-        f"{silver_df.filter(col('trip_seconds') < 0).count():,} |",
+        (
+            f"| Missing trip IDs | "
+            f"{bronze_df.filter(col('trip_id').isNull()).count():,} | "
+            f"{silver_df.filter(col('trip_id').isNull()).count():,} |"
+        ),
+        (
+            f"| Zero trip duration | "
+            f"{bronze_df.filter(col('trip_seconds') == 0).count():,} | "
+            f"{silver_df.filter(col('trip_seconds') == 0).count():,} |"
+        ),
+        (
+            f"| Zero trip distance | "
+            f"{bronze_df.filter(col('trip_miles') == 0).count():,} | "
+            f"{silver_df.filter(col('trip_miles') == 0).count():,} |"
+        ),
+        (
+            f"| Negative trip duration | "
+            f"{bronze_df.filter(col('trip_seconds') < 0).count():,} | "
+            f"{silver_df.filter(col('trip_seconds') < 0).count():,} |"
+        ),
         "",
         "### Filtering summary",
         "",
@@ -817,10 +847,13 @@ try:
         "- Calculated average speed must not exceed 100 mph.",
         "- Trip duration is derived from `trip_seconds`.",
         "",
-        "These are project-specific provisional thresholds, "
-        "not universal definitions of valid taxi trips.",
+        (
+            "These are project-specific provisional thresholds, "
+            "not universal definitions of valid taxi trips."
+        ),
         "",
     ])
+
     # --------------------------------------------------
     # Write report
     # --------------------------------------------------

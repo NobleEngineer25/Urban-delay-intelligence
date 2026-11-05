@@ -1,20 +1,21 @@
 
 from delta import configure_spark_with_delta_pip
+from pyspark.ml import Pipeline
+from pyspark.ml.evaluation import RegressionEvaluator
+from pyspark.ml.feature import OneHotEncoder, StringIndexer, VectorAssembler
+from pyspark.ml.regression import RandomForestRegressor
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col,
-    avg,
     abs as spark_abs,
+)
+from pyspark.sql.functions import (
+    avg,
+    col,
+    lit,
     row_number,
     when,
-    lit,
 )
 from pyspark.sql.window import Window
-
-from pyspark.ml import Pipeline
-from pyspark.ml.feature import StringIndexer, OneHotEncoder, VectorAssembler
-from pyspark.ml.regression import RandomForestRegressor
-from pyspark.ml.evaluation import RegressionEvaluator
 
 builder = (
     SparkSession.builder

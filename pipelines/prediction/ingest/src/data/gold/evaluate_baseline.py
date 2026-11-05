@@ -1,18 +1,19 @@
 
 import mlflow
-from pyspark.sql.window import Window
-from pyspark.sql.functions import row_number
 from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
+    abs as spark_abs,
+)
+from pyspark.sql.functions import (
     avg,
     col,
-    abs as spark_abs,
     count,
     hour,
-    to_timestamp,
+    row_number,
     when,
 )
+from pyspark.sql.window import Window
 
 builder = (
     SparkSession.builder

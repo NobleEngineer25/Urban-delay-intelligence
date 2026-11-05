@@ -1,7 +1,7 @@
 
 from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import avg, count, col
+from pyspark.sql.functions import avg, col, count
 
 builder = (
     SparkSession.builder

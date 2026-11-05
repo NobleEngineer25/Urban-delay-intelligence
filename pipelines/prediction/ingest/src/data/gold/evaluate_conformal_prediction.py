@@ -1,17 +1,13 @@
 
+import lightgbm as lgb
+import mlflow
+import numpy as np
+from conformal_prediction import ConformalPredictionWrapper
 from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, row_number
 from pyspark.sql.window import Window
-
-import lightgbm as lgb
-import mlflow
-import numpy as np
-
 from sklearn.metrics import mean_absolute_error
-
-from conformal_prediction import ConformalPredictionWrapper
-
 
 # 1. Spark session
 builder = (
