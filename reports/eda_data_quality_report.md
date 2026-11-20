@@ -386,28 +386,32 @@ The geographic bounds are restricted to the Chicago area; coordinates outside th
 - Exact duplicate checks do not replace business-key checks.
 - This script does not change or delete source rows.
 - Findings describe the raw CSV before Bronze ingestion.
-- Compare raw, Bronze, Silver and Gold row counts and document each filtering rule.
+- Compare raw, Bronze, Silver and H3 row counts and document each filtering rule.
 - Histogram limits and geographic bounds affect only the visualizations, not the underlying dataset.
 
 
-## 13. Bronze vs Silver data quality comparison
+## 13. Bronze, Silver and H3 data quality comparison
 
 Silver applies provisional data-quality rules to Bronze.
+H3 indexing adds spatial indexes to the Silver dataset.
 
-| Metric | Bronze | Silver |
-|---|---:|---:|
-| Total rows | 414,478 | 368,307 |
-| Missing trip IDs | 0 | 0 |
-| Zero trip duration | 7,924 | 0 |
-| Zero trip distance | 44,519 | 0 |
-| Negative trip duration | 0 | 0 |
+| Metric | Bronze | Silver | Silver + H3 |
+|---|---:|---:|---:|
+| Total rows | 414,478 | 368,307 | 322,503 |
+| Missing trip IDs | 0 | 0 | 0 |
+| Zero trip duration | 7,924 | 0 | 0 |
+| Zero trip distance | 44,519 | 0 | 0 |
+| Negative trip duration | 0 | 0 | 0 |
 
 ### Filtering summary
 
 - **Bronze rows:** 414,478
 - **Silver rows:** 368,307
-- **Rows removed:** 46,171
-- **Rows retained:** 88.86%
+- **Silver + H3 rows:** 322,503
+- **Rows removed during Silver processing:** 46,171
+- **Silver retention rate:** 88.86%
+- **Rows excluded during H3 indexing:** 45,804
+- **H3 retention rate:** 87.56%
 
 ### Silver quality rules
 
@@ -419,4 +423,10 @@ Silver applies provisional data-quality rules to Bronze.
 - Trip duration is derived from `trip_seconds`.
 
 These are project-specific provisional thresholds, not universal definitions of valid taxi trips.
+
+### H3 indexing
+
+H3 indexing creates spatial indexes for pickup and dropoff locations. Rows without valid generated pickup and dropoff H3 indexes are excluded.
+
+The H3 retention rate represents the proportion of Silver rows retained after H3 indexing.
 

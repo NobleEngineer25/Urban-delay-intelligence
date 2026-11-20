@@ -1,12 +1,15 @@
+
 import lightgbm as lgb
 import mlflow
 import numpy as np
 import pandas as pd
+
 from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
 from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import KFold
+
 
 # --------------------------------------------------
 # 1. Configuration
@@ -19,11 +22,18 @@ GOLD_PATH = (
 FEATURE_COLUMNS = [
     "pickup_community_area",
     "dropoff_community_area",
-    "hour",
-    "day_of_week",
+    "hour_sin",
+    "hour_cos",
+    "day_of_week_sin",
+    "day_of_week_cos",
     "is_weekend",
-    "month",
     "is_rush_hour",
+    "pickup_dropoff_distance_km",
+]
+
+CATEGORICAL_COLUMNS = [
+    "pickup_community_area",
+    "dropoff_community_area",
 ]
 
 TARGET = "trip_duration_minutes"
@@ -44,18 +54,46 @@ def create_model():
     )
 
 
+def prepare_features(train, test):
+    """Prepare features and preserve training categories."""
+    X_train = train[FEATURE_COLUMNS].copy()
+    X_test = test[FEATURE_COLUMNS].copy()
+
+    for column in CATEGORICAL_COLUMNS:
+        X_train[column] = X_train[column].astype("category")
+
+        training_categories = X_train[column].cat.categories
+
+        unseen_count = (
+            ~X_test[column].isin(training_categories)
+        ).sum()
+
+        if unseen_count:
+            print(
+                f"Unseen categories in {column}: "
+                f"{unseen_count}"
+            )
+
+        X_test[column] = pd.Categorical(
+            X_test[column],
+            categories=training_categories,
+        )
+
+    return X_train, X_test
+
+
 def evaluate_fold(df, train_mask, test_mask, label):
-    """Train and evaluate one fold."""
-    train = df.loc[train_mask]
-    test = df.loc[test_mask]
+    """Train and evaluate one cross-validation fold."""
+    train = df.loc[train_mask].copy()
+    test = df.loc[test_mask].copy()
 
     if train.empty or test.empty:
         print(f"Skipping {label}: empty train or test set.")
         return None
 
-    X_train = train[FEATURE_COLUMNS]
+    X_train, X_test = prepare_features(train, test)
+
     y_train = train[TARGET]
-    X_test = test[FEATURE_COLUMNS]
     y_test = test[TARGET]
 
     model = create_model()
@@ -80,7 +118,7 @@ def evaluate_fold(df, train_mask, test_mask, label):
 
 
 # --------------------------------------------------
-# 2. Load and prepare Gold data
+# 2. Create Spark session and load Gold data
 # --------------------------------------------------
 builder = (
     SparkSession.builder
@@ -102,7 +140,12 @@ try:
     df_spark = spark.read.format("delta").load(GOLD_PATH)
 
     required_columns = (
-        ["trip_id", "trip_start_timestamp"]
+        [
+            "trip_id",
+            "trip_start_timestamp",
+            "pickup_h3",
+            "dropoff_h3",
+        ]
         + FEATURE_COLUMNS
         + [TARGET]
     )
@@ -111,6 +154,8 @@ try:
         df_spark
         .filter(
             col("trip_start_timestamp").isNotNull()
+            & col("pickup_h3").isNotNull()
+            & col("dropoff_h3").isNotNull()
             & col("pickup_community_area").isNotNull()
             & col("dropoff_community_area").isNotNull()
             & col(TARGET).isNotNull()
@@ -125,6 +170,10 @@ try:
 finally:
     spark.stop()
 
+
+# --------------------------------------------------
+# 3. Prepare Pandas data
+# --------------------------------------------------
 df["trip_start_timestamp"] = pd.to_datetime(
     df["trip_start_timestamp"]
 )
@@ -144,14 +193,20 @@ print(
     df["trip_start_timestamp"].max(),
 )
 
+print(
+    "Unique pickup H3 cells:",
+    df["pickup_h3"].nunique(),
+)
+
 
 # --------------------------------------------------
-# 3. Temporal cross-validation
-# Expanding training window; each test fold is later
-# than its corresponding training data.
+# 4. Temporal cross-validation
+# Expanding training window.
+# Every test fold contains later observations.
 # --------------------------------------------------
 temporal_results = []
 n_rows = len(df)
+row_indices = np.arange(n_rows)
 
 print("\n===== TEMPORAL CROSS-VALIDATION =====")
 
@@ -159,14 +214,18 @@ for fold in range(N_SPLITS):
     train_end = int(n_rows * (0.50 + 0.10 * fold))
     test_end = int(n_rows * (0.60 + 0.10 * fold))
 
-    train_mask = np.arange(n_rows) < train_end
+    train_mask = row_indices < train_end
+
     test_mask = (
-        (np.arange(n_rows) >= train_end)
-        & (np.arange(n_rows) < test_end)
+        (row_indices >= train_end)
+        & (row_indices < test_end)
     )
 
     result = evaluate_fold(
-        df, train_mask, test_mask, f"temporal_fold_{fold + 1}"
+        df,
+        train_mask,
+        test_mask,
+        f"temporal_fold_{fold + 1}",
     )
 
     if result is not None:
@@ -176,65 +235,68 @@ for fold in range(N_SPLITS):
         result["test_end"] = str(
             df.loc[test_mask, "trip_start_timestamp"].max()
         )
+
         temporal_results.append(result)
 
 
 # --------------------------------------------------
-# 4. Spatial cross-validation
-# Hold out pickup areas. Remove training trips that
-# involve any held-out area as pickup or dropoff.
+# 5. Spatial cross-validation using H3
+# Hold out pickup H3 cells.
+# Exclude training trips involving held-out cells
+# as either pickup or dropoff.
 # --------------------------------------------------
 spatial_results = []
 
-areas = np.sort(
-    df["pickup_community_area"].unique()
+h3_cells = np.sort(
+    df["pickup_h3"].unique()
 )
 
-if len(areas) < N_SPLITS:
+if len(h3_cells) < N_SPLITS:
     raise ValueError(
-        f"Need at least {N_SPLITS} pickup areas "
+        f"Need at least {N_SPLITS} pickup H3 cells "
         "for spatial cross-validation."
     )
 
-area_splitter = KFold(
+spatial_splitter = KFold(
     n_splits=N_SPLITS,
     shuffle=True,
     random_state=RANDOM_STATE,
 )
 
-print("\n===== SPATIAL CROSS-VALIDATION =====")
+print("\n===== SPATIAL CROSS-VALIDATION (H3) =====")
 
-for fold, (train_area_idx, test_area_idx) in enumerate(
-    area_splitter.split(areas), start=1
+for fold, (_, test_cell_idx) in enumerate(
+    spatial_splitter.split(h3_cells),
+    start=1,
 ):
-    held_out_areas = areas[test_area_idx]
+    held_out_cells = h3_cells[test_cell_idx]
 
-    # Test trips originate in held-out pickup areas.
-    test_mask = df["pickup_community_area"].isin(
-        held_out_areas
-    )
+    # Test trips start in held-out pickup H3 cells.
+    test_mask = df["pickup_h3"].isin(held_out_cells)
 
-    # Exclude every training trip involving a held-out
-    # area, whether as pickup or dropoff.
+    # Training trips must not involve held-out cells
+    # as pickup or dropoff.
     involves_held_out = (
-        df["pickup_community_area"].isin(held_out_areas)
-        | df["dropoff_community_area"].isin(held_out_areas)
+        df["pickup_h3"].isin(held_out_cells)
+        | df["dropoff_h3"].isin(held_out_cells)
     )
+
     train_mask = ~involves_held_out
 
     result = evaluate_fold(
-        df, train_mask, test_mask, f"spatial_fold_{fold}"
+        df,
+        train_mask,
+        test_mask,
+        f"spatial_fold_{fold}",
     )
 
     if result is not None:
-        result["held_out_pickup_areas"] = ",".join(
-            str(area) for area in held_out_areas
-        )
+        result["held_out_h3_cells"] = len(held_out_cells)
         spatial_results.append(result)
 
 
 # --------------------------------------------------
-# 5. Summarize and log to MLflow
+# 6. Summarize results
 # --------------------------------------------------
 temporal_df = pd.DataFrame(temporal_results)
 spatial_df = pd.DataFrame(spatial_results)
@@ -243,7 +305,7 @@ print("\n===== CROSS-VALIDATION SUMMARY =====")
 
 for name, results in [
     ("Temporal", temporal_df),
-    ("Spatial", spatial_df),
+    ("Spatial H3", spatial_df),
 ]:
     if results.empty:
         print(f"{name}: no valid folds.")
@@ -251,15 +313,43 @@ for name, results in [
 
     print(f"\n{name} CV")
     print(f"Valid folds: {len(results)}")
-    print(f"Mean MAE: {results['mae_minutes'].mean():.2f} minutes")
-    print(f"Std MAE: {results['mae_minutes'].std(ddof=0):.2f} minutes")
-    print(f"Best MAE: {results['mae_minutes'].min():.2f} minutes")
-    print(f"Worst MAE: {results['mae_minutes'].max():.2f} minutes")
+    print(
+        f"Mean MAE: "
+        f"{results['mae_minutes'].mean():.2f} minutes"
+    )
+    print(
+        f"Std MAE: "
+        f"{results['mae_minutes'].std(ddof=0):.2f} minutes"
+    )
+    print(
+        f"Best MAE: "
+        f"{results['mae_minutes'].min():.2f} minutes"
+    )
+    print(
+        f"Worst MAE: "
+        f"{results['mae_minutes'].max():.2f} minutes"
+    )
+
+
+# --------------------------------------------------
+# 7. Save results and log to MLflow
+# --------------------------------------------------
+temporal_df.to_csv(
+    "temporal_cv_results.csv",
+    index=False,
+)
+
+spatial_df.to_csv(
+    "spatial_cv_results.csv",
+    index=False,
+)
 
 mlflow.set_tracking_uri("sqlite:///mlflow.db")
 mlflow.set_experiment("urban-delay-intelligence")
 
-with mlflow.start_run(run_name="spatiotemporal_cross_validation"):
+with mlflow.start_run(
+    run_name="spatiotemporal_cross_validation_h3"
+):
     mlflow.log_params({
         "model_type": "LightGBM median quantile regression",
         "n_estimators": 300,
@@ -267,7 +357,12 @@ with mlflow.start_run(run_name="spatiotemporal_cross_validation"):
         "num_leaves": 31,
         "n_splits": N_SPLITS,
         "temporal_strategy": "expanding_window",
-        "spatial_strategy": "held_out_pickup_areas",
+        "spatial_strategy": "held_out_pickup_h3_cells",
+        "spatial_leakage_prevention": (
+            "exclude training trips involving held-out H3 cells"
+        ),
+        "categorical_features": ",".join(CATEGORICAL_COLUMNS),
+        "features": ",".join(FEATURE_COLUMNS),
         "random_state": RANDOM_STATE,
     })
 
@@ -278,18 +373,17 @@ with mlflow.start_run(run_name="spatiotemporal_cross_validation"):
         if results.empty:
             continue
 
-        mlflow.log_metric(
-            f"{name}_cv_mean_mae",
-            float(results["mae_minutes"].mean()),
-        )
-        mlflow.log_metric(
-            f"{name}_cv_std_mae",
-            float(results["mae_minutes"].std(ddof=0)),
-        )
-        mlflow.log_metric(
-            f"{name}_cv_worst_mae",
-            float(results["mae_minutes"].max()),
-        )
+        mlflow.log_metrics({
+            f"{name}_cv_mean_mae": float(
+                results["mae_minutes"].mean()
+            ),
+            f"{name}_cv_std_mae": float(
+                results["mae_minutes"].std(ddof=0)
+            ),
+            f"{name}_cv_worst_mae": float(
+                results["mae_minutes"].max()
+            ),
+        })
 
         for _, row in results.iterrows():
             mlflow.log_metric(
@@ -297,15 +391,9 @@ with mlflow.start_run(run_name="spatiotemporal_cross_validation"):
                 float(row["mae_minutes"]),
             )
 
-    temporal_df.to_csv(
-        "temporal_cv_results.csv", index=False
-    )
-    spatial_df.to_csv(
-        "spatial_cv_results.csv", index=False
-    )
-
-    mlflow.log_artifact("temporal_cv_results.csv")
-    mlflow.log_artifact("spatial_cv_results.csv")
+        mlflow.log_artifact(
+            f"{name}_cv_results.csv"
+        )
 
 print("\nResults logged to MLflow.")
 print("Saved temporal_cv_results.csv")

@@ -8,7 +8,13 @@ BASE_URL = "https://data.cityofchicago.org/api/v3/views/wrvz-psew/query.json"
 START_DATE = "2023-01-01T00:00:00"
 END_DATE = "2023-02-01T00:00:00"
 
-OUTPUT_DIR = Path("data/raw")
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+
+OUTPUT_DIR = (
+    PROJECT_ROOT
+    / "pipelines/prediction/ingest/src/data/raw"
+)
+
 OUTPUT_FILE = OUTPUT_DIR / "chicago_taxi_2023_01.csv"
 
 PAGE_SIZE = 5000
@@ -74,8 +80,10 @@ def download_taxi_data():
             timeout=120
         )
 
+        print("HTTP status:", response.status_code)
+        print("Response body:", response.text[:2000])
+        print("Response headers:", dict(response.headers))
         response.raise_for_status()
-
         data = response.json()
 
         if not data:

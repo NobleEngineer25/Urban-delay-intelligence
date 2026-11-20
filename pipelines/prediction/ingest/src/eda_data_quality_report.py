@@ -1,4 +1,3 @@
-
 from pathlib import Path
 
 import matplotlib
@@ -72,6 +71,17 @@ SILVER_PATH = (
     / "data"
     / "silver"
     / "chicago_taxi"
+)
+
+H3_PATH = (
+    PROJECT_ROOT
+    / "pipelines"
+    / "prediction"
+    / "ingest"
+    / "src"
+    / "data"
+    / "silver"
+    / "chicago_taxi_h3"
 )
 
 FIGURES_DIR = REPORT_FILE.parent / "figures"
@@ -205,7 +215,6 @@ try:
                 f"| {row['hour']} | {row['count']:,} |"
             )
 
-        # Calculate the busiest hours once, outside the loop.
         busiest_hours = sorted(
             hourly,
             key=lambda row: row["count"],
@@ -305,6 +314,7 @@ try:
 
     for name in columns:
         missing_count = int(missing_row[name] or 0)
+
         percentage = (
             missing_count / row_count * 100
             if row_count
@@ -400,10 +410,12 @@ try:
             df, lines, "Missing trip_seconds",
             col("trip_seconds").isNull(),
         )
+
         add_check(
             df, lines, "Zero trip_seconds",
             col("trip_seconds") == 0,
         )
+
         add_check(
             df, lines, "Negative trip_seconds",
             col("trip_seconds") < 0,
@@ -414,10 +426,12 @@ try:
             df, lines, "Missing trip_miles",
             col("trip_miles").isNull(),
         )
+
         add_check(
             df, lines, "Zero trip_miles",
             col("trip_miles") == 0,
         )
+
         add_check(
             df, lines, "Negative trip_miles",
             col("trip_miles") < 0,
@@ -431,6 +445,7 @@ try:
             df, lines, "Missing trip end timestamp",
             col("trip_end_timestamp").isNull(),
         )
+
         add_check(
             df, lines, "Trip end before trip start",
             col("trip_end_timestamp")
@@ -470,6 +485,7 @@ try:
                 "(NULL)" if row[name] is None
                 else escape_markdown(row[name])
             )
+
             percentage = (
                 row["count"] / row_count * 100
                 if row_count
@@ -595,6 +611,7 @@ try:
                 escape_markdown(row[field])
                 for field in identifiers
             ]
+
             lines.append("| " + " | ".join(values) + " |")
 
         lines.append("")
@@ -712,10 +729,12 @@ try:
                 row["pickup_centroid_latitude"]
                 for row in geo_df
             ]
+
             longitudes = [
                 row["pickup_centroid_longitude"]
                 for row in geo_df
             ]
+
             counts = [row["count"] for row in geo_df]
 
             plt.figure(figsize=(9, 8))
@@ -725,13 +744,19 @@ try:
                 s=[min(count, 500) for count in counts],
                 alpha=0.6,
             )
+
             plt.title("Chicago Taxi Pickup Density")
             plt.xlabel("Longitude")
             plt.ylabel("Latitude")
             plt.tight_layout()
 
             geo_filename = "pickup_density_chicago.png"
-            plt.savefig(FIGURES_DIR / geo_filename, dpi=150)
+
+            plt.savefig(
+                FIGURES_DIR / geo_filename,
+                dpi=150,
+            )
+
             plt.close()
 
             lines.extend([
@@ -771,7 +796,7 @@ try:
         "- This script does not change or delete source rows.",
         "- Findings describe the raw CSV before Bronze ingestion.",
         (
-            "- Compare raw, Bronze, Silver and Gold row counts and "
+            "- Compare raw, Bronze, Silver and H3 row counts and "
             "document each filtering rule."
         ),
         (
@@ -782,61 +807,92 @@ try:
     ])
 
     # --------------------------------------------------
-    # 13. Bronze vs Silver data quality comparison
+    # 13. Bronze, Silver and H3 data quality comparison
     # --------------------------------------------------
 
-    lines.extend([
-        "",
-        "## 13. Bronze vs Silver data quality comparison",
-        "",
-        "Silver applies provisional data-quality rules to Bronze.",
-        "",
-        "| Metric | Bronze | Silver |",
-        "|---|---:|---:|",
-    ])
+    bronze_df = (
+        spark.read.format("delta")
+        .load(str(BRONZE_PATH))
+    )
 
-    bronze_df = spark.read.format("delta").load(str(BRONZE_PATH))
-    silver_df = spark.read.format("delta").load(str(SILVER_PATH))
+    silver_df = (
+        spark.read.format("delta")
+        .load(str(SILVER_PATH))
+    )
+
+    h3_df = (
+        spark.read.format("delta")
+        .load(str(H3_PATH))
+    )
 
     bronze_count = bronze_df.count()
     silver_count = silver_df.count()
+    h3_count = h3_df.count()
 
     removed_count = bronze_count - silver_count
+
     retained_pct = (
         silver_count / bronze_count * 100
         if bronze_count
         else 0
     )
 
+    h3_removed_count = silver_count - h3_count
+
+    h3_retained_pct = (
+        h3_count / silver_count * 100
+        if silver_count
+        else 0
+    )
+
     lines.extend([
-        f"| Total rows | {bronze_count:,} | {silver_count:,} |",
+        "",
+        "## 13. Bronze, Silver and H3 data quality comparison",
+        "",
+        "Silver applies provisional data-quality rules to Bronze.",
+        "H3 indexing adds spatial indexes to the Silver dataset.",
+        "",
+        "| Metric | Bronze | Silver | Silver + H3 |",
+        "|---|---:|---:|---:|",
+        (
+            f"| Total rows | {bronze_count:,} "
+            f"| {silver_count:,} "
+            f"| {h3_count:,} |"
+        ),
         (
             f"| Missing trip IDs | "
             f"{bronze_df.filter(col('trip_id').isNull()).count():,} | "
-            f"{silver_df.filter(col('trip_id').isNull()).count():,} |"
+            f"{silver_df.filter(col('trip_id').isNull()).count():,} | "
+            f"{h3_df.filter(col('trip_id').isNull()).count():,} |"
         ),
         (
             f"| Zero trip duration | "
             f"{bronze_df.filter(col('trip_seconds') == 0).count():,} | "
-            f"{silver_df.filter(col('trip_seconds') == 0).count():,} |"
+            f"{silver_df.filter(col('trip_seconds') == 0).count():,} | "
+            f"{h3_df.filter(col('trip_seconds') == 0).count():,} |"
         ),
         (
             f"| Zero trip distance | "
             f"{bronze_df.filter(col('trip_miles') == 0).count():,} | "
-            f"{silver_df.filter(col('trip_miles') == 0).count():,} |"
+            f"{silver_df.filter(col('trip_miles') == 0).count():,} | "
+            f"{h3_df.filter(col('trip_miles') == 0).count():,} |"
         ),
         (
             f"| Negative trip duration | "
             f"{bronze_df.filter(col('trip_seconds') < 0).count():,} | "
-            f"{silver_df.filter(col('trip_seconds') < 0).count():,} |"
+            f"{silver_df.filter(col('trip_seconds') < 0).count():,} | "
+            f"{h3_df.filter(col('trip_seconds') < 0).count():,} |"
         ),
         "",
         "### Filtering summary",
         "",
         f"- **Bronze rows:** {bronze_count:,}",
         f"- **Silver rows:** {silver_count:,}",
-        f"- **Rows removed:** {removed_count:,}",
-        f"- **Rows retained:** {retained_pct:.2f}%",
+        f"- **Silver + H3 rows:** {h3_count:,}",
+        f"- **Rows removed during Silver processing:** {removed_count:,}",
+        f"- **Silver retention rate:** {retained_pct:.2f}%",
+        f"- **Rows excluded during H3 indexing:** {h3_removed_count:,}",
+        f"- **H3 retention rate:** {h3_retained_pct:.2f}%",
         "",
         "### Silver quality rules",
         "",
@@ -852,6 +908,19 @@ try:
             "not universal definitions of valid taxi trips."
         ),
         "",
+        "### H3 indexing",
+        "",
+        (
+            "H3 indexing creates spatial indexes for pickup and "
+            "dropoff locations. Rows without valid generated "
+            "pickup and dropoff H3 indexes are excluded."
+        ),
+        "",
+        (
+            "The H3 retention rate represents the proportion of "
+            "Silver rows retained after H3 indexing."
+        ),
+        "",
     ])
 
     # --------------------------------------------------
@@ -865,6 +934,10 @@ try:
 
     print(f"Report saved to: {REPORT_FILE}")
     print(f"Rows: {row_count:,}; columns: {len(columns)}")
+    print(f"Bronze rows: {bronze_count:,}")
+    print(f"Silver rows: {silver_count:,}")
+    print(f"H3 rows: {h3_count:,}")
+    print(f"Rows excluded during H3 indexing: {h3_removed_count:,}")
     print(f"Figures saved to: {FIGURES_DIR}")
 
 finally:
