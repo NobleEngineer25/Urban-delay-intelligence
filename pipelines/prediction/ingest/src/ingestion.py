@@ -80,9 +80,6 @@ def download_taxi_data():
             timeout=120
         )
 
-        print("HTTP status:", response.status_code)
-        print("Response body:", response.text[:2000])
-        print("Response headers:", dict(response.headers))
         response.raise_for_status()
         data = response.json()
 
