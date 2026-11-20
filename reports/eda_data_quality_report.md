@@ -380,15 +380,16 @@ The geographic bounds are restricted to the Chicago area; coordinates outside th
 
 ## 12. Interpretation and limitations
 
-- Missing geographic fields may limit spatial analysis.
-- Zero or negative durations should be investigated.
-- Extreme distance and fare values need domain validation.
+- Missing geographic fields limit spatial analysis and H3 indexing.
+- The raw-data analysis identified zero-duration trips and extreme distance and monetary values. Silver removes records that violate its documented duration, distance, trip-total and average-speed thresholds; it does not independently validate every extreme fare, toll or extra value.
 - Exact duplicate checks do not replace business-key checks.
-- This script does not change or delete source rows.
-- Findings describe the raw CSV before Bronze ingestion.
-- Compare raw, Bronze, Silver and H3 row counts and document each filtering rule.
+- This report describes the raw CSV before Bronze ingestion, unless a later processing stage is explicitly stated.
+- Silver and H3 retention rates reflect the project's documented filtering and indexing rules.
+- H3 indexing excludes rows with missing pickup or dropoff coordinates.
+- The dataset covers January 2023 only. Temporal validation therefore evaluates performance within this month and does not establish generalization across seasons or years.
+- The engineered pickup-to-dropoff distance is a straight-line distance between centroid coordinates, not actual road distance. Zero distances may occur when both locations share the same centroid.
 - Histogram limits and geographic bounds affect only the visualizations, not the underlying dataset.
-
+- The H3 resolution used in this project is resolution 8.
 
 ## 13. Bronze, Silver and H3 data quality comparison
 
@@ -426,7 +427,37 @@ These are project-specific provisional thresholds, not universal definitions of 
 
 ### H3 indexing
 
-H3 indexing creates spatial indexes for pickup and dropoff locations. Rows without valid generated pickup and dropoff H3 indexes are excluded.
+H3 resolution 8 is used to create spatial indexes for pickup and dropoff locations.
 
-The H3 retention rate represents the proportion of Silver rows retained after H3 indexing.
+- Silver input rows: 368,307
+- H3-indexed rows retained: 322,503
+- Rows excluded during H3 indexing: 45,804
+- H3 retention rate: 87.56%
 
+The exclusion was investigated using the Silver dataset:
+
+| Coordinate quality check | Rows |
+|---|---:|
+| Missing pickup coordinates | 21,810 |
+| Missing dropoff coordinates | 32,803 |
+| Pickup coordinates outside valid latitude/longitude ranges | 0 |
+| Dropoff coordinates outside valid latitude/longitude ranges | 0 |
+| Rows with at least one missing pickup or dropoff coordinate | 45,804 |
+
+The pickup and dropoff missing counts can overlap. The 45,804 figure represents distinct rows with at least one missing coordinate, not the sum of the two missing-coordinate counts.
+
+No coordinates outside the valid latitude and longitude ranges were found. The excluded rows are explained by missing pickup or dropoff coordinates.
+
+### H3 geographic coverage
+
+The resulting H3 dataset contains the following geographic coverage:
+
+| Metric | Pickup | Dropoff |
+|---|---:|---:|
+| Unique H3 cells | 197 | 250 |
+| Unique non-null community areas | 77 | 77 |
+| Rows with null community area | 12 | 1,259 |
+
+The count of 77 non-null community areas for both pickup and dropoff matches the 77 community areas in Chicago. The distinct count including null is 78 because Spark counts NULL as a distinct value.
+
+These results describe the geographic coverage of the H3-indexed dataset, not all trips in the original raw dataset.

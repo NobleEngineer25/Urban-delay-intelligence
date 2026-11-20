@@ -15,6 +15,9 @@ from pyspark.sql.functions import (
 )
 from pyspark.sql.window import Window
 
+# -----------------------------
+# 1. Create Spark session
+# -----------------------------
 builder = (
     SparkSession.builder
     .appName("EvaluateUrbanDelayBaseline")
@@ -31,14 +34,21 @@ builder = (
 
 spark = configure_spark_with_delta_pip(builder).getOrCreate()
 
-silver_path = (
-    "pipelines/prediction/ingest/src/data/silver/"
-    "chicago_taxi"
+
+# -----------------------------
+# 2. Read Gold dataset
+# -----------------------------
+gold_path = (
+    "pipelines/prediction/ingest/src/data/gold/"
+    "chicago_taxi_features"
 )
 
-df = spark.read.format("delta").load(silver_path)
+df = spark.read.format("delta").load(gold_path)
 
-# Keep valid trips and the fields required for evaluation.
+
+# -----------------------------
+# 3. Apply same initial filters
+# -----------------------------
 df = df.filter(
     col("trip_start_timestamp").isNotNull()
     & col("pickup_community_area").isNotNull()
@@ -47,58 +57,68 @@ df = df.filter(
     & (col("trip_duration_minutes") > 0)
 )
 
-# Sort by trip start time and split chronologically:
-# earliest 80% for training, latest 20% for testing.
-df = df.orderBy("trip_start_timestamp", "trip_id")
+
+# -----------------------------
+# 4. Same chronological split
+# -----------------------------
+ordering = Window.orderBy(
+    "trip_start_timestamp",
+    "trip_id",
+)
+
+df = df.withColumn(
+    "_row_num",
+    row_number().over(ordering),
+)
 
 total_rows = df.count()
 split_row = int(total_rows * 0.8)
 
-ordering = Window.orderBy("trip_start_timestamp", "trip_id")
-
-df = df.withColumn("_row_num", row_number().over(ordering))
-
 train = df.filter(col("_row_num") <= split_row)
 test = df.filter(col("_row_num") > split_row)
 
-print("Baseline:")
-print("Total rows:", total_rows)
-print("Train rows:", train.count())
-print("Test rows:", test.count())
 
-print("Test trip ID range:")
-test.selectExpr(
-    "min(trip_id) as min_trip_id",
-    "max(trip_id) as max_trip_id",
-).show(truncate=False)
+# -----------------------------
+# 5. Same feature filtering as LightGBM
+# -----------------------------
+feature_columns = [
+    "pickup_community_area",
+    "dropoff_community_area",
+    "hour_sin",
+    "hour_cos",
+    "day_of_week_sin",
+    "day_of_week_cos",
+    "is_weekend",
+    "is_rush_hour",
+    "pickup_dropoff_distance_km",
+]
 
-# Derive hour from the timestamp so the feature is consistent.
+train = train.dropna(
+    subset=feature_columns + ["trip_duration_minutes"]
+)
+
+test = test.dropna(
+    subset=feature_columns + ["trip_duration_minutes"]
+)
+
+
+# -----------------------------
+# 6. Derive hour for baseline
+# -----------------------------
 train = train.withColumn(
     "hour",
     hour("trip_start_timestamp"),
 )
+
 test = test.withColumn(
     "hour",
     hour("trip_start_timestamp"),
 )
-test.selectExpr(
-    "min(trip_start_timestamp) as test_start",
-    "max(trip_start_timestamp) as test_end",
-).show(truncate=False)
 
 
-print(
-    "Test period:",
-    test.agg(
-        {"trip_start_timestamp": "min"}
-    ).first()[0],
-    "to",
-    test.agg(
-        {"trip_start_timestamp": "max"}
-    ).first()[0],
-)
-
-# Build the lookup table using TRAINING DATA ONLY.
+# -----------------------------
+# 7. Build baseline using training data only
+# -----------------------------
 baseline = (
     train.groupBy(
         "pickup_community_area",
@@ -111,7 +131,10 @@ baseline = (
     )
 )
 
-# Match each test trip to its historical average.
+
+# -----------------------------
+# 8. Generate test predictions
+# -----------------------------
 test_predictions = test.join(
     baseline,
     on=[
@@ -123,8 +146,7 @@ test_predictions = test.join(
 )
 
 
-# For combinations not found in training, use the overall
-# training-set average as a fallback.
+# Fallback for unseen combinations
 training_mean = train.agg(
     avg("trip_duration_minutes").alias("mean_duration")
 ).first()["mean_duration"]
@@ -137,7 +159,10 @@ test_predictions = test_predictions.withColumn(
     ).otherwise(col("prediction")),
 )
 
-# Calculate mean absolute error in minutes.
+
+# -----------------------------
+# 9. Evaluate MAE
+# -----------------------------
 results = test_predictions.withColumn(
     "absolute_error",
     spark_abs(
@@ -148,14 +173,19 @@ results = test_predictions.withColumn(
 mae = results.agg(
     avg("absolute_error").alias("mae")
 ).first()["mae"]
-# Configure MLflow tracking
+
+
+# -----------------------------
+# 10. Log results to MLflow
+# -----------------------------
 mlflow.set_tracking_uri("sqlite:///mlflow.db")
 mlflow.set_experiment("urban-delay-intelligence")
 
-# Log the baseline evaluation
-with mlflow.start_run(run_name="historical_mean_baseline"):
+with mlflow.start_run(run_name="historical_mean_baseline_gold"):
+
     mlflow.log_params({
         "model_type": "historical_mean",
+        "dataset": "chicago_taxi_features",
         "target": "trip_duration_minutes",
         "train_test_split": "80/20",
         "split_strategy": "chronological",
@@ -164,6 +194,7 @@ with mlflow.start_run(run_name="historical_mean_baseline"):
             "pickup_community_area,"
             "dropoff_community_area,hour"
         ),
+        "feature_filtering": "same_as_lightgbm",
     })
 
     mlflow.log_metrics({
@@ -181,15 +212,21 @@ with mlflow.start_run(run_name="historical_mean_baseline"):
     })
 
     print("MLflow run logged successfully.")
-    
+
+
+# -----------------------------
+# 11. Print evaluation results
+# -----------------------------
 print("\n===== BASELINE EVALUATION =====")
-print(f"Total valid trips: {total_rows}")
-print(f"Training trips: {train.count()}")
-print(f"Test trips: {test.count()}")
+print("Dataset: Gold")
+print("Total rows before feature filtering:", total_rows)
+print("Training rows after feature filtering:", train.count())
+print("Test rows after feature filtering:", test.count())
 print(f"Training-set fallback mean: {training_mean:.2f} minutes")
-print(f"Test MAE: {mae:.2f} minutes")
+print(f"Baseline test MAE: {mae:.2f} minutes")
 
 print("\nExample predictions:")
+
 results.select(
     "trip_start_timestamp",
     "pickup_community_area",
