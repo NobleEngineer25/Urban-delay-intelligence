@@ -252,3 +252,5 @@ pipelines/prediction/ingest/src/data/gold/chicago_taxi_features/
 
 # Local MLflow tracking artifacts
 mlruns/
+# Generated geocoded / H3-tagged data
+data/processed/
