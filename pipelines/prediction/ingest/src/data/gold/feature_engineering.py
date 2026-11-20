@@ -18,7 +18,6 @@ from pyspark.sql.functions import (
     when,
 )
 
-
 builder = (
     SparkSession.builder
     .appName("UrbanDelayFeatureEngineering")
