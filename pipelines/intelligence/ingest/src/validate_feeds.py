@@ -32,8 +32,7 @@ N_COMMUNITY_AREAS = 77
 # (pass_at_or_above, partial_at_or_above), in percent.
 THRESHOLDS = {
     "geocoding": (95.0, 80.0),
-    "spatial_311": (90.0, 70.0),
-    "spatial_permits": (70.0, 50.0),  # permits cluster where utility work is
+    "spatial": (90.0, 70.0),
     "temporal": (100.0, 90.0),
     "timestamps": (99.0, 95.0),
 }
@@ -45,7 +44,7 @@ class Check:
     source: str
     name: str
     value: str
-    status: str  # PASS / PARTIAL / FAIL
+    status: str  # PASS / PARTIAL / FAIL, or INFO (reported, not graded)
     note: str = ""
 
 
@@ -65,11 +64,17 @@ def month_bounds(month: str) -> tuple[pd.Timestamp, pd.Timestamp, int]:
     return start, start + pd.Timedelta(days=n_days), n_days
 
 
-def daily_counts(df: pd.DataFrame, source: str, start: pd.Timestamp, n_days: int) -> pd.Series:
-    """311: requests created per day. Permits: segments active on each day."""
+def daily_counts(df: pd.DataFrame, start: pd.Timestamp, n_days: int) -> pd.Series:
+    """Records starting on each day of the month (311 created, permit start date).
+    Counting new records, not active ones, means a feed that stops arriving shows up
+    as empty days; long-running permits would otherwise cover every day."""
     days = pd.date_range(start, periods=n_days, freq="D")
-    if source == "311":
-        return df["start_time"].dt.floor("D").value_counts().reindex(days, fill_value=0)
+    return df["start_time"].dt.floor("D").value_counts().reindex(days, fill_value=0)
+
+
+def active_counts(df: pd.DataFrame, start: pd.Timestamp, n_days: int) -> pd.Series:
+    """Permit segments active on each day (informational only)."""
+    days = pd.date_range(start, periods=n_days, freq="D")
     s, e = df["start_time"], df["end_time"]
     return pd.Series(
         [int(((s < day + pd.Timedelta(days=1)) & (e >= day)).sum()) for day in days], index=days
@@ -91,30 +96,42 @@ def check_source(df: pd.DataFrame, source: str, month: str) -> tuple[list[Check]
         f"{n_block} recovered by block match, {(~placed).sum()} failed",
     ))
 
-    # Spatial coverage
+    # Spatial coverage. Only 311 carries its own community area; permit areas are
+    # borrowed from 311 by H3 cell, so grading them would re-test 311. Report only.
     cas = df.loc[placed, "community_area"].dropna()
     cas = cas[cas.between(1, N_COMMUNITY_AREAS)].astype(int).unique()
     ca_pct = len(cas) / N_COMMUNITY_AREAS * 100
     missing_cas = sorted(set(range(1, N_COMMUNITY_AREAS + 1)) - set(cas))
+    own_areas = source == "311"
     checks.append(Check(
-        source, "Community areas covered", f"{ca_pct:.1f}% ({len(cas)}/{N_COMMUNITY_AREAS})",
-        grade(ca_pct, f"spatial_{source}"),
+        source, "Community areas covered" + ("" if own_areas else " (approx., via 311)"),
+        f"{ca_pct:.1f}% ({len(cas)}/{N_COMMUNITY_AREAS})",
+        grade(ca_pct, "spatial") if own_areas else "INFO",
         f"{df.loc[placed, 'h3_cell'].nunique():,} H3 cells (res {g.H3_RES})"
         + (f"; missing areas: {missing_cas}" if missing_cas else ""),
     ))
 
-    # Temporal coverage
-    counts = daily_counts(df, source, start, n_days)
-    covered = (counts > 0).sum()
-    day_pct = covered / n_days * 100
+    # Temporal coverage: new records per day. Permits are issued on weekdays, so
+    # they are graded on weekdays only.
+    counts = daily_counts(df, start, n_days)
+    if source == "permits":
+        counts = counts[counts.index.day_of_week < 5]
+        label, unit = "Weekdays with new records", "weekdays"
+    else:
+        label, unit = "Days with new records", "days"
+    covered = int((counts > 0).sum())
+    day_pct = covered / len(counts) * 100
+    note = f"daily min/median/max: {counts.min():,}/{int(counts.median()):,}/{counts.max():,}"
+    if source == "permits":
+        active = active_counts(df, start, n_days)
+        note += f"; active segments per day {active.min():,}-{active.max():,}"
     checks.append(Check(
-        source, "Days with data", f"{day_pct:.1f}% ({covered}/{n_days})", grade(day_pct, "temporal"),
-        f"daily min/median/max: {counts.min():,}/{int(counts.median()):,}/{counts.max():,}",
+        source, label, f"{day_pct:.1f}% ({covered}/{len(counts)} {unit})", grade(day_pct, "temporal"), note,
     ))
     low = counts[counts < LOW_VOLUME_DAY * counts.median()]
     if len(low):
         warnings.append(
-            f"{source}: low-volume days (<{LOW_VOLUME_DAY:.0%} of median): "
+            f"{source}: low-volume {unit} (<{LOW_VOLUME_DAY:.0%} of median): "
             + ", ".join(f"{d:%m-%d} ({c})" for d, c in low.items())
         )
 
@@ -128,11 +145,6 @@ def check_source(df: pd.DataFrame, source: str, month: str) -> tuple[list[Check]
 
     # Source-specific notes (informational)
     if source == "311":
-        dup_share = df["is_duplicate"].mean() * 100
-        warnings.append(
-            f"311: {dup_share:.1f}% of requests are flagged duplicate by the city; "
-            "exclude them from the document index to avoid double-counting."
-        )
         outside = ~df["start_time"].between(start, start + pd.Timedelta(days=n_days), inclusive="left")
         if outside.any():
             warnings.append(f"311: {outside.sum():,} requests created outside {month}.")
@@ -169,11 +181,13 @@ def check_weather(month: str) -> tuple[list[Check], list[str]]:
 
 
 def decide(checks: list[Check]) -> tuple[str, dict[str, str]]:
+    order = ["PASS", "PARTIAL", "FAIL"]
     per_source: dict[str, str] = {}
     for c in checks:
         worst = per_source.get(c.source, "PASS")
-        order = ["PASS", "PARTIAL", "FAIL"]
-        per_source[c.source] = max(worst, c.status, key=order.index)
+        if c.status in order:  # INFO checks never move the decision
+            worst = max(worst, c.status, key=order.index)
+        per_source[c.source] = worst
     if any(v == "FAIL" for v in per_source.values()):
         overall = "OFF-RAMP"
     elif any(v == "PARTIAL" for v in per_source.values()):
@@ -233,9 +247,12 @@ def render(month: str, rates: pd.DataFrame, checks: list[Check], warnings: list[
         "using every raw 311 and permit file as the address reference."),
         (f"- **H3:** every geocoded record is tagged with its resolution-{g.H3_RES} cell "
         "(output: `data/processed/disruptions_h3_YYYY_MM.parquet`)."),
-        ("- **Community areas:** 311 records carry one. Permits borrow the most common 311 community "
-        "area in the same H3 cell, so permit coverage is approximate."),
-        "- **Temporal:** 311 counts requests created per day; permits count segments active on each day.",
+        ("- **Duplicates:** 311 requests the city flags as duplicates are excluded before every check "
+        "and rate above."),
+        ("- **Community areas:** 311 records carry one and are graded. Permits borrow the most common "
+        "311 community area in the same H3 cell, so their coverage is reported (INFO) but not graded."),
+        ("- **Temporal:** counts new records per day (311 created date, permit start date), so a feed "
+        "that stops arriving shows empty days. Permits are graded on weekdays only."),
         "",
     ]
     return "\n".join(lines)
@@ -247,10 +264,16 @@ def main() -> None:
     args = parser.parse_args()
 
     df = g.run(args.month)
+    city_dups = df["is_duplicate"].fillna(False).astype(bool)
+    n_311 = int((df["source"] == "311").sum())
+    df = df[~city_dups]
     rates = g.geocoding_rates(df)
 
     checks: list[Check] = []
-    warnings: list[str] = []
+    warnings: list[str] = [
+        (f"311: excluded {int(city_dups.sum()):,} of {n_311:,} requests "
+        f"({city_dups.sum() / n_311:.1%}) flagged duplicate by the city; all figures use the rest.")
+    ]
     for source in ("311", "permits"):
         c, w = check_source(df[df["source"] == source], source, args.month)
         checks += c

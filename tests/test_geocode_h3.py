@@ -63,3 +63,21 @@ def test_grade_and_decision():
     overall, per_source = v.decide(checks)
     assert overall == "OFF-RAMP"
     assert per_source == {"311": "PASS", "permits": "FAIL"}
+
+
+def test_info_checks_do_not_affect_decision():
+    checks = [v.Check("permits", "x", "", "PASS"), v.Check("permits", "areas", "", "INFO")]
+    assert v.decide(checks) == ("GO", {"permits": "PASS"})
+
+
+def test_daily_counts_counts_new_records_not_active_ones():
+    start, _, n_days = v.month_bounds("2023-01")
+    # A permit that started in 2017 and is still active should not fill any January day.
+    df = pd.DataFrame({
+        "start_time": pd.to_datetime(["2017-07-17", "2023-01-03", "2023-01-03"]),
+        "end_time": pd.to_datetime(["2099-01-01", "2023-01-10", "2023-01-10"]),
+    })
+    counts = v.daily_counts(df, start, n_days)
+    assert counts.sum() == 2
+    assert counts[pd.Timestamp("2023-01-03")] == 2
+    assert v.active_counts(df, start, n_days)[pd.Timestamp("2023-01-20")] == 1
