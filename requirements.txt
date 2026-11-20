@@ -11,3 +11,4 @@ requests
 duckdb
 fastapi[standard]
 httpx2
+pyarrow
