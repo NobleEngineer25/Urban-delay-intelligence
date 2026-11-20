@@ -845,6 +845,41 @@ try:
         else 0
     )
 
+    # Describe the trips H3 indexing drops, to show whether removing
+    # them biases the model's error downward.
+    excluded_df = silver_df.join(
+        h3_df.select("trip_id"), on="trip_id", how="left_anti"
+    )
+
+    def h3_group_row(label, frame):
+        stats = frame.agg(
+            percentile_approx("trip_duration_minutes", 0.5).alias("minutes"),
+            percentile_approx("trip_miles", 0.5).alias("miles"),
+            mean(col("trip_miles")).alias("mean_miles"),
+        ).first()
+        n = frame.count()
+        no_pickup = frame.filter(
+            col("pickup_centroid_latitude").isNull()
+        ).count()
+        no_dropoff = frame.filter(
+            col("dropoff_centroid_latitude").isNull()
+        ).count()
+
+        def fmt(value):
+            return "n/a" if value is None else f"{value:.1f}"
+
+        return (
+            f"| {label} | {n:,} | {fmt(stats['minutes'])} "
+            f"| {fmt(stats['miles'])} | {fmt(stats['mean_miles'])} "
+            f"| {no_pickup / n * 100 if n else 0:.1f}% "
+            f"| {no_dropoff / n * 100 if n else 0:.1f}% |"
+        )
+
+    h3_exclusion_rows = [
+        h3_group_row("Kept (Silver + H3)", h3_df),
+        h3_group_row("Excluded by H3", excluded_df),
+    ]
+
     lines.extend([
         "",
         "## 13. Bronze, Silver and H3 data quality comparison",
@@ -920,6 +955,21 @@ try:
             "The H3 retention rate represents the proportion of "
             "Silver rows retained after H3 indexing."
         ),
+        "",
+        "### Trips excluded by H3 indexing",
+        "",
+        (
+            "If excluded trips are longer or more unusual than kept "
+            "ones, model error measured on the H3 table understates "
+            "error on all trips."
+        ),
+        "",
+        (
+            "| Group | Trips | Median minutes | Median miles "
+            "| Mean miles | No pickup centroid | No dropoff centroid |"
+        ),
+        "|---|---:|---:|---:|---:|---:|---:|",
+        *h3_exclusion_rows,
         "",
     ])
 

@@ -1,4 +1,5 @@
 
+import h3
 import lightgbm as lgb
 import mlflow
 import numpy as np
@@ -34,6 +35,18 @@ CATEGORICAL_COLUMNS = [
     "dropoff_community_area",
 ]
 
+# Spatial folds must not see where the held-out trips are. Community area
+# identifies the location, and a held-out H3 cell shares its community area
+# with training cells, so spatial folds use only location-free features.
+SPATIAL_FEATURE_COLUMNS = [
+    c for c in FEATURE_COLUMNS if c not in CATEGORICAL_COLUMNS
+]
+
+# Spatial folds hold out whole blocks of neighbouring cells (the H3 parent
+# at this resolution, ~36 km² at res 6), not scattered single cells, so
+# test trips are not surrounded by training trips from the next cell over.
+SPATIAL_BLOCK_RESOLUTION = 6
+
 TARGET = "trip_duration_minutes"
 N_SPLITS = 5
 RANDOM_STATE = 42
@@ -52,12 +65,12 @@ def create_model():
     )
 
 
-def prepare_features(train, test):
+def prepare_features(train, test, features):
     """Prepare features and preserve training categories."""
-    X_train = train[FEATURE_COLUMNS].copy()
-    X_test = test[FEATURE_COLUMNS].copy()
+    X_train = train[features].copy()
+    X_test = test[features].copy()
 
-    for column in CATEGORICAL_COLUMNS:
+    for column in [c for c in CATEGORICAL_COLUMNS if c in features]:
         X_train[column] = X_train[column].astype("category")
 
         training_categories = X_train[column].cat.categories
@@ -80,7 +93,7 @@ def prepare_features(train, test):
     return X_train, X_test
 
 
-def evaluate_fold(df, train_mask, test_mask, label):
+def evaluate_fold(df, train_mask, test_mask, label, features=FEATURE_COLUMNS):
     """Train and evaluate one cross-validation fold."""
     train = df.loc[train_mask].copy()
     test = df.loc[test_mask].copy()
@@ -89,7 +102,7 @@ def evaluate_fold(df, train_mask, test_mask, label):
         print(f"Skipping {label}: empty train or test set.")
         return None
 
-    X_train, X_test = prepare_features(train, test)
+    X_train, X_test = prepare_features(train, test, features)
 
     y_train = train[TARGET]
     y_test = test[TARGET]
@@ -238,20 +251,36 @@ for fold in range(N_SPLITS):
 
 
 # --------------------------------------------------
-# 5. Spatial cross-validation using H3
-# Hold out pickup H3 cells.
-# Exclude training trips involving held-out cells
+# 5. Spatial cross-validation using H3 blocks
+# Hold out blocks of neighbouring pickup cells.
+# Exclude training trips touching a held-out block
 # as either pickup or dropoff.
+# Train without community-area features (see config).
 # --------------------------------------------------
 spatial_results = []
 
-h3_cells = np.sort(
-    df["pickup_h3"].unique()
+
+def to_block(cell):
+    """H3 parent cell used as the spatial hold-out unit."""
+    res = h3.get_resolution(cell)
+    return h3.cell_to_parent(cell, min(SPATIAL_BLOCK_RESOLUTION, res))
+
+
+df["pickup_block"] = df["pickup_h3"].map(to_block)
+df["dropoff_block"] = df["dropoff_h3"].map(to_block)
+
+blocks = np.sort(
+    df["pickup_block"].unique()
 )
 
-if len(h3_cells) < N_SPLITS:
+print(
+    "Spatial blocks (H3 res "
+    f"{SPATIAL_BLOCK_RESOLUTION}): {len(blocks)}"
+)
+
+if len(blocks) < N_SPLITS:
     raise ValueError(
-        f"Need at least {N_SPLITS} pickup H3 cells "
+        f"Need at least {N_SPLITS} pickup blocks "
         "for spatial cross-validation."
     )
 
@@ -261,22 +290,22 @@ spatial_splitter = KFold(
     random_state=RANDOM_STATE,
 )
 
-print("\n===== SPATIAL CROSS-VALIDATION (H3) =====")
+print("\n===== SPATIAL CROSS-VALIDATION (H3 blocks) =====")
 
-for fold, (_, test_cell_idx) in enumerate(
-    spatial_splitter.split(h3_cells),
+for fold, (_, test_block_idx) in enumerate(
+    spatial_splitter.split(blocks),
     start=1,
 ):
-    held_out_cells = h3_cells[test_cell_idx]
+    held_out_blocks = blocks[test_block_idx]
 
-    # Test trips start in held-out pickup H3 cells.
-    test_mask = df["pickup_h3"].isin(held_out_cells)
+    # Test trips start in held-out blocks.
+    test_mask = df["pickup_block"].isin(held_out_blocks)
 
-    # Training trips must not involve held-out cells
+    # Training trips must not touch held-out blocks
     # as pickup or dropoff.
     involves_held_out = (
-        df["pickup_h3"].isin(held_out_cells)
-        | df["dropoff_h3"].isin(held_out_cells)
+        df["pickup_block"].isin(held_out_blocks)
+        | df["dropoff_block"].isin(held_out_blocks)
     )
 
     train_mask = ~involves_held_out
@@ -286,10 +315,14 @@ for fold, (_, test_cell_idx) in enumerate(
         train_mask,
         test_mask,
         f"spatial_fold_{fold}",
+        features=SPATIAL_FEATURE_COLUMNS,
     )
 
     if result is not None:
-        result["held_out_h3_cells"] = len(held_out_cells)
+        result["held_out_blocks"] = len(held_out_blocks)
+        result["held_out_h3_cells"] = int(
+            df.loc[test_mask, "pickup_h3"].nunique()
+        )
         spatial_results.append(result)
 
 
@@ -346,7 +379,7 @@ mlflow.set_tracking_uri("sqlite:///mlflow.db")
 mlflow.set_experiment("urban-delay-intelligence")
 
 with mlflow.start_run(
-    run_name="spatiotemporal_cross_validation_h3"
+    run_name="spatiotemporal_cross_validation_h3_blocks"
 ):
     mlflow.log_params({
         "model_type": "LightGBM median quantile regression",
@@ -355,12 +388,15 @@ with mlflow.start_run(
         "num_leaves": 31,
         "n_splits": N_SPLITS,
         "temporal_strategy": "expanding_window",
-        "spatial_strategy": "held_out_pickup_h3_cells",
+        "spatial_strategy": "held_out_pickup_h3_blocks",
+        "spatial_block_resolution": SPATIAL_BLOCK_RESOLUTION,
         "spatial_leakage_prevention": (
-            "exclude training trips involving held-out H3 cells"
+            "exclude training trips touching held-out blocks; "
+            "no community-area features in spatial folds"
         ),
         "categorical_features": ",".join(CATEGORICAL_COLUMNS),
         "features": ",".join(FEATURE_COLUMNS),
+        "spatial_features": ",".join(SPATIAL_FEATURE_COLUMNS),
         "random_state": RANDOM_STATE,
     })
 
